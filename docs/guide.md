@@ -203,6 +203,8 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
 
 The selected project and its profile, slots in use, agents working, agents needing you, failing verifies, stale slots, the project's OTel cost and tokens, when the data was last refreshed, and a Mission Control link.
 
+The panel icon at the far right hides or shows the right panel (also `har.toggle-panel`). Clicking a slot in the tree shows the panel again. herdr remembers whether it's shown across restarts.
+
 ## Settings
 
 Open them with the gear in the tree header, or `har.settings`.
@@ -212,6 +214,8 @@ Open them with the gear in the tree header, or `har.settings`.
 | Slot view | **Compact** (one line per slot) or **Detailed** (cards) |
 | Agent CLI | Any installed agent herdr knows, e.g. `claude`, `codex`. Used by new discussions, Launch and Start agent, and shown next to "HAR" in the header. |
 | Free slots | Show or hide free slots under each project |
+| Spacing | **None** (the default: terminals and panels edge to edge, separated by 1px lines), **Compact** (4px gaps, small corners) or **Comfortable** (8px gaps, rounded corners). Changing it rewrites the spacing values in `~/.config/herdr-app/layouts/har.json`, and herdr applies it immediately. |
+| Links | **herdr browser** (the default when [herdr-web-browser](https://github.com/MattJColes/herdr-web-browser) is installed): preview, PR and Mission Control links open in a browser pane beside the focused one. **System browser** opens them as before. |
 | Tools | Shows where `har`, `node` and `gh` were found and how. **har path** / **node path** set them by hand (`~/` works); leave them empty to find them automatically. **Save paths** looks again right away. |
 
 Settings, the project list and which projects are open are saved in herdr's shared state, so they survive restarts.
@@ -231,8 +235,17 @@ Bind them in `~/.config/herdr-app/keys.json`, for example `"alt-n": "har.new"`.
 | `har.agent` | Start the agent CLI in the selected slot |
 | `har.toggle-view` | Compact ↔ detailed |
 | `har.settings` | Open settings |
+| `har.toggle-panel` | Hide / show the right panel |
 | `har.refresh` | Refresh now |
 | `har.next-repo` | Select the next project |
+
+Commands are handled by the status bar's copy of the mod, so they keep working while the right panel is hidden.
+
+## Opening links inside herdr
+
+With [herdr-web-browser](https://github.com/MattJColes/herdr-web-browser) installed (`./install.sh` installs it), every link the HAR panels show opens in a browser pane beside the focused one: slot preview URLs, PR chips, work-unit links and Mission Control. A pane that already shows the browser for that agent is reused. Set **Links → System browser** to go back to your normal browser.
+
+Ctrl-clicking a URL **inside a terminal** still opens your system browser. herdr desktop opens those links itself and has no hook for mods to change that; herdr-web-browser's link handler only works in the herdr TUI.
 
 ## Where the data comes from
 

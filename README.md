@@ -15,6 +15,7 @@ A [herdr](https://herdr.dev) layout for [HAR](https://github.com/os-factory/har)
 - Each project is one line: name, path, slots in use, and a **+** that starts a new discussion.
 - Each slot is one line: a status dot, `#id`, work unit, PR number, `↑` unpushed commits, `●` uncommitted changes, `stale`, and the last verify result.
 - One search box covers projects, slots, work units, branches, PRs, commits and agent prompts. It also finds HAR projects on this machine that you haven't added yet.
+- The right panel can be hidden with the panel icon in the status bar. Gaps between panes are off by default (Settings → Spacing).
 - A header button switches to detailed cards, which show the branch, ahead/behind, PR state and a strip with one cell per verification stage.
 
 ### New discussion
@@ -43,6 +44,7 @@ The **slot view** shows the work unit, branch and base, Git & PR state with a "s
 
 - herdr desktop app (`herdr-app`)
 - [`@osfactory/har`](https://www.npmjs.com/package/@osfactory/har) installed globally (`npm i -g @osfactory/har`). The panel finds it through your login or interactive shell (bash, zsh, fish, nu) or the usual nvm/volta/fnm/mise/asdf/Homebrew folders. You can also set its path in Settings.
+- Optional, installed by default: [herdr-web-browser](https://github.com/MattJColes/herdr-web-browser), so panel links open in a browser pane inside herdr. It's built from source, which needs Rust (`cargo`) and git. Skip it with `--no-browser`.
 - Optional: `gh`, logged in, for PR state
 - Optional: Mission Control (`har control up`) for OTel cost and tokens
 
@@ -51,9 +53,13 @@ The **slot view** shows the work unit, branch and base, Git & PR state with a "s
 ```bash
 git clone https://github.com/os-factory/herdr-har-ui
 cd herdr-har-ui
-./install.sh            # copies into ~/.config/herdr-app
-./install.sh --link     # or symlinks, to edit in place
+./install.sh                    # copies into ~/.config/herdr-app, installs herdr-web-browser if missing
+./install.sh --link             # or symlinks, to edit in place
+./install.sh --no-browser       # skip herdr-web-browser
+./install.sh --browser-agents   # also let it add a "use this browser" section to Claude Code / Codex / OpenCode / Pi global instructions
 ```
+
+The browser's agent-instructions step is off by default, so installing never changes your agents' global instructions unless you ask.
 
 Then switch to the layout in herdr with `ctrl-shift-l` → **HAR**. On first run, the project list starts with the projects HAR already knows (`~/.har/repos.json`). Add more with **+** in the header or from the search results.
 

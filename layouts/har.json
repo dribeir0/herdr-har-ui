@@ -84,8 +84,8 @@
         {
           "id": "work-body",
           "type": "row",
-          "padding": 8,
-          "gap": 8,
+          "padding": 0,
+          "gap": 0,
           "children": [
             {
               "id": "main",
@@ -93,8 +93,8 @@
               "content": {
                 "tab": "active",
                 "pane": {
-                  "gap": 8,
-                  "radius": 10,
+                  "gap": 0,
+                  "radius": 0,
                   "background": "background",
                   "lone": true,
                   "border": {
@@ -164,7 +164,11 @@
                 }
               }
             }
-          ]
+          ],
+          "divider": {
+            "width": 1,
+            "color": "border"
+          }
         },
         {
           "id": "status",

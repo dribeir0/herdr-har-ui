@@ -1,7 +1,7 @@
 // HAR data for the herdr panels: everything comes from the `har` CLI
 // (`har env status --json`, `har env runs list --json`) and the harness's own
 // `.har/stages.json`, so Mission Control does not need to be running.
-import { exec, readTextFile, hc, panes, spaces, agents, shared, setShared, home } from "herdr";
+import { exec, readTextFile, writeTextFile, hc, panes, spaces, agents, shared, setShared, home, appHome, focused } from "herdr";
 
 export const MC_URL = "http://localhost:3847";
 const KEY = { repos: "har.repos", repo: "har.repo", slot: "har.slot", snap: "har.snapshot", tick: "har.refresh" };
@@ -32,7 +32,7 @@ export function setLive(v) {
 }
 export const bump = () => setShared(KEY.tick, Date.now());
 /** Panel settings (persisted): slotView "compact" | "detailed", showFree, agent. */
-export const SETTING_DEFAULTS = { slotView: "compact", showFree: true };
+export const SETTING_DEFAULTS = { slotView: "compact", showFree: true, spacing: "none", links: "herdr" };
 export const setting = (k) => (shared("har.settings") ?? {})[k] ?? SETTING_DEFAULTS[k];
 export const setSetting = (k, v) => setShared("har.settings", { ...(shared("har.settings") ?? {}), [k]: v });
 export const expanded = (r) => (shared("har.expanded") ?? {})[r] ?? true;
@@ -333,7 +333,65 @@ export function lastVerify(snap, slot) {
 }
 
 /** Opens a URL with the desktop's handler. */
-export const openUrl = (url) => exec("xdg-open", [url]).catch(() => exec("open", [url]));
+const systemOpen = (url) => exec("xdg-open", [url]).catch(() => exec("open", [url]));
+
+// herdr-web-browser (https://github.com/MattJColes/herdr-web-browser): pages open in a pane beside
+// the focused one instead of the system browser. Its CLI calls `herdr-app`, which lives in
+// ~/.local/bin — not on herdr's own PATH — so run it with that folder prepended.
+const BROWSER = () => `${home()}/.local/bin/herdr-web-browser`;
+let browserOk = null;
+export async function hasBrowser() {
+  if (browserOk === null) browserOk = (await exec("test", ["-x", BROWSER()]).catch(() => null))?.code === 0;
+  return browserOk;
+}
+export const browserInstalled = () => browserOk;
+
+/** Opens a URL in the herdr browser (Settings → Links), else the system browser. */
+export async function openUrl(url) {
+  if (setting("links") !== "system" && (await hasBrowser())) {
+    const owner = focused()?.terminal;
+    const r = await exec("sh", ["-c", 'PATH="$HOME/.local/bin:$PATH"; exec "$@"', "sh", BROWSER(), ...(owner ? ["--owner", owner] : []), "open", url, "--show"],
+      { timeout: 30000 }).catch(() => null);
+    if (r?.code === 0) return r;
+  }
+  return systemOpen(url);
+}
+
+// ---- spacing --------------------------------------------------------------------------
+/** Gaps and corners of the work area, written into layouts/har.json (herdr applies it live). */
+export const SPACING = {
+  none: { padding: 0, gap: 0, paneGap: 0, radius: 0, divider: true },
+  compact: { padding: 4, gap: 4, paneGap: 4, radius: 6, divider: false },
+  comfortable: { padding: 8, gap: 8, paneGap: 8, radius: 10, divider: false },
+};
+export const spacing = () => SPACING[setting("spacing")] ?? SPACING.none;
+
+function findNode(n, id) {
+  if (!n || typeof n !== "object") return null;
+  if (n.id === id) return n;
+  for (const c of n.children ?? []) { const f = findNode(c, id); if (f) return f; }
+  return null;
+}
+
+/** Rewrites the HAR layout's spacing when it differs from the setting. Resolves true when it wrote. */
+export async function applySpacing() {
+  const path = `${appHome()}/layouts/har.json`;
+  const text = await readTextFile(path).catch(() => null);
+  if (!text) return false;
+  let L;
+  try { L = JSON.parse(text); } catch { return false; }
+  const s = spacing();
+  const body = findNode(L, "work-body"), main = findNode(L, "main");
+  if (!body || !main?.content?.pane) return false;
+  const pane = main.content.pane;
+  const want = { padding: s.padding, gap: s.gap, paneGap: s.paneGap, radius: s.radius, divider: s.divider };
+  const have = { padding: body.padding ?? 0, gap: body.gap ?? 0, paneGap: pane.gap ?? 0, radius: pane.radius ?? 0, divider: Boolean(body.divider) };
+  if (JSON.stringify(want) === JSON.stringify(have)) return false;
+  body.padding = s.padding; body.gap = s.gap; pane.gap = s.paneGap; pane.radius = s.radius;
+  if (s.divider) body.divider = { width: 1, color: "border" }; else delete body.divider;
+  await writeTextFile(path, JSON.stringify(L, null, 2) + "\n", text);
+  return true;
+}
 
 /** Finds this harness in Mission Control and opens the slot page (or MC's home). */
 export async function openMissionControl(repo, slotId) {

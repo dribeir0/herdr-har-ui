@@ -51,12 +51,19 @@ export default class Har extends View {
       cx.timer.every(POLL_MS, (cx) => this.refresh(cx, H.currentRepo()));
       cx.timer.every(30000, (cx) => { for (const r of H.repos()) if (r !== H.currentRepo()) this.refresh(cx, r); });
     }
-    if (this.view === "detail") {
-      cx.timer.every(1500, (cx) => this.pollLive(cx));
-      // keys.json: "alt-2": "har.slot-2", "alt-v": "har.verify-full", "alt-n": "har.new", ...
+    if (this.view === "status") {
+      // herdr hands each "har.<command>" to every copy waiting on nextCommand(), so exactly one
+      // view listens: the status bar, which is always shown (the right panel can be hidden).
       cx.spawn(async (cx) => { for (;;) { this.command(await nextCommand(), cx); cx.notify(); } });
     }
+    if (this.view === "detail") {
+      H.applySpacing().catch(() => {});   // the layout follows Settings → Spacing
+      H.hasBrowser().catch(() => {});
+      cx.timer.every(1500, (cx) => this.pollLive(cx));
+      // key commands ("alt-2": "har.slot-2", "alt-v": "har.verify-full", …) are handled by the status bar
+    }
     if (this.view === "settings") {
+      H.hasBrowser().then(() => cx.notify()).catch(() => {});
       const mk = (key, placeholder) => {
         const st = InputState.new({ value: H.setting(key) ?? "", placeholder });
         st.on("submit", (_e, cx) => { this.savePaths(); cx.notify(); });
@@ -89,6 +96,7 @@ export default class Har extends View {
     if (c === "next-repo") { const all = H.repos(); return H.selectRepo(all[(all.indexOf(repo) + 1) % all.length]); }
     if (c === "new") return this.newDiscussion(repo, cx);
     if (c === "settings") return openSettings();
+    if (c === "toggle-panel") return run("layout.toggle", { id: "har-panel" });
     if (c === "find-tools") return H.resetBins();   // look for har/node/gh again
     if (c === "toggle-view") return H.setSetting("slotView", H.setting("slotView") === "compact" ? "detailed" : "compact");
     if (c === "choose") return repo && openOverlay({ mod: "har", kind: "dialog", width: 640, height: 0.82, props: { view: "free", repo } });
@@ -399,7 +407,7 @@ export default class Har extends View {
     return h_flex().id(`sr-${repo}-${s.id}`).pl(30).pr(6).h(26).gap(6).items_center().rounded(6).cursor_pointer()
       .bg(selected ? t.selected : CLEAR).hover((e) => e.bg(selected ? t.selected : t.hover))
       .tooltip([s.work, f.pr && `PR #${f.pr.number} ${f.pr.state.toLowerCase()}`, s.branch, f.reasons.join(" · ")].filter(Boolean).join("\n"))
-      .on_click(() => { H.selectRepo(repo); H.selectSlot(s.id); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); })
+      .on_click(() => { H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" }); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); })
       .child(aState === "working" ? this.pulse(color, 7) : this.dot(color, 7))
       .child(div().w(18).flex_none().text_size(11).text_color(t.muted).child(`#${s.id}`))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(selected ? t.foreground : t.muted)
@@ -421,7 +429,7 @@ export default class Har extends View {
     const card = v_flex().id(`slot-${s.id}`).p(9).gap(5).rounded(8).cursor_pointer()
       .bg(selected ? t.selected : t.surface).border_1().border_color(selected ? t.accent : t.border)
       .hover((e) => e.border_color(t.input))
-      .on_click(() => { H.selectSlot(s.id); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); });
+      .on_click(() => { H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" }); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); });
 
     if (!s.active) {
       return card.child(h_flex().items_center().gap(7)
@@ -493,6 +501,12 @@ export default class Har extends View {
         seg("ag", agents.map((a) => [a.key, a.key]), H.agentChoice(), (k) => H.setAgentChoice(k))))
       .child(row("Free slots", "Show free slots under each project.",
         seg("sf", [["on", "Show"], ["off", "Hide"]], H.setting("showFree") ? "on" : "off", (k) => H.setSetting("showFree", k === "on"))))
+      .child(row("Spacing", "Gaps and corners around terminals and the right panel.",
+        seg("sp", [["none", "None"], ["compact", "Compact"], ["comfortable", "Comfortable"]], H.setting("spacing"),
+          (k) => { H.setSetting("spacing", k); H.applySpacing().catch(() => {}); })))
+      .child(row("Links", H.browserInstalled() === false ? "herdr-web-browser is not installed (./install.sh installs it), so links use the system browser."
+          : "Preview, PR and Mission Control links open in the herdr browser beside the focused pane.",
+        seg("ln", [["herdr", "herdr browser"], ["system", "System browser"]], H.setting("links"), (k) => H.setSetting("links", k))))
       .child(v_flex().gap(6).pt(4).border_t(1).border_color(t.border)
         .child(div().pt(8).text_size(12).child("Tools"))
         .child(div().text_size(10.5).text_color(info?.error ? t.ansi1 : t.dim).child(toolsLine))
@@ -591,8 +605,9 @@ export default class Har extends View {
   renderDetail(t, cx) {
     const repo = H.currentRepo(), snap = repo ? H.snapshot(repo) : null, id = H.currentSlot();
     const slot = snap?.slots.find((s) => s.id === id) ?? null;
-    const shell = (children) => v_flex().id("har-detail").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)
-      .border_1().border_color(t.border).text_color(t.foreground).text_size(12.5)
+    const sp = H.spacing();
+    const shell = (children) => v_flex().id("har-detail").size_full().min_h(0).rounded(sp.radius).overflow_hidden().bg(t.background)
+      .when(!sp.divider, (e) => e.border_1().border_color(t.border)).text_color(t.foreground).text_size(12.5)
       .child(this.scroller("har-detail-scroll", v_flex().pb(14).children(children), t));
     if (!snap) return shell([div().p(14).text_color(t.dim).child("Waiting for HAR data…")]);
     if (!slot) return shell(this.overview(repo, snap, t, cx));
@@ -867,10 +882,12 @@ export default class Har extends View {
       .child(div().flex_1())
       .when(Boolean(snap?.at), (e) => e.child(div().text_color(t.dim).child(`updated ${H.ago(new Date(snap.at).toISOString())}`)))
       .child(div().id("st-mc").cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
-        .on_click(() => repo && H.openMissionControl(repo, H.currentSlot())).child("Mission Control ↗"));
+        .on_click(() => repo && H.openMissionControl(repo, H.currentSlot())).child("Mission Control ↗"))
+      .child(div().id("st-panel").cursor_pointer().tooltip("Show / hide the HAR panel (har.toggle-panel)")
+        .on_click(() => run("layout.toggle", { id: "har-panel" })).child(this.icon("panel-right", t.dim, 14)));
   }
 }
 
-function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 460, height: 560, props: { view: "settings" } }); }
+function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 480, height: 680, props: { view: "settings" } }); }
 
 function rank(v) { return { free: 0, safe: 1, caution: 2, keep: 3 }[v] ?? 4; }
