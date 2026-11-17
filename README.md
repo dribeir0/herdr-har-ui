@@ -42,7 +42,7 @@ The **slot view** shows the work unit, branch and base, Git & PR state with a "s
 ## Requirements
 
 - herdr desktop app (`herdr-app`)
-- [`@osfactory/har`](https://www.npmjs.com/package/@osfactory/har) installed in your login shell (`npm i -g @osfactory/har`). nvm, volta and asdf installs are found through your login shell.
+- [`@osfactory/har`](https://www.npmjs.com/package/@osfactory/har) installed globally (`npm i -g @osfactory/har`). The panel finds it through your login or interactive shell (bash, zsh, fish, nu) or the usual nvm/volta/fnm/mise/asdf/Homebrew folders. You can also set its path in Settings.
 - Optional: `gh`, logged in, for PR state
 - Optional: Mission Control (`har control up`) for OTel cost and tokens
 
@@ -74,7 +74,7 @@ install.sh                 copy or link into ~/.config/herdr-app
 layouts/har.json           the herdr layout (sidebar tree, work area, right panel, status bar)
 mods/har/main.js           views: tree, detail, status, free (dialog), settings
 mods/har/data.js           data layer: har CLI, git, gh, Mission Control
-mods/har/bin/              launch-agent.sh (free → launch → agent), collect.mjs (git + work units)
+mods/har/bin/              launch-agent.sh (free → launch → agent), collect.mjs (git + work units), find-tools.sh (finds har/node/gh)
 mods/har/icons/            Lucide icons (ISC)
 docs/                      user guide and screenshots
 ```

@@ -55,6 +55,16 @@ export default class Har extends View {
       // keys.json: "alt-2": "har.slot-2", "alt-v": "har.verify-full", "alt-n": "har.new", ...
       cx.spawn(async (cx) => { for (;;) { this.command(await nextCommand(), cx); cx.notify(); } });
     }
+    if (this.view === "settings") {
+      const mk = (key, placeholder) => {
+        const st = InputState.new({ value: H.setting(key) ?? "", placeholder });
+        st.on("submit", (_e, cx) => { this.savePaths(); cx.notify(); });
+        return st;
+      };
+      this.harInput = mk("harPath", "found automatically — or e.g. ~/.volta/bin/har");
+      this.nodeInput = mk("nodePath", "optional — node used to run har");
+      this.saved = false;
+    }
     if (this.view === "free") {
       const p = props();
       const snap = H.snapshot(p.repo);
@@ -77,7 +87,8 @@ export default class Har extends View {
     if (c === "refresh") return H.bump();
     if (c === "next-repo") { const all = H.repos(); return H.selectRepo(all[(all.indexOf(repo) + 1) % all.length]); }
     if (c === "new") return this.newDiscussion(repo, cx);
-    if (c === "settings") return openOverlay({ mod: "har", kind: "dialog", width: 320, height: 330, props: { view: "settings" } });
+    if (c === "settings") return openSettings();
+    if (c === "find-tools") return H.resetBins();   // look for har/node/gh again
     if (c === "toggle-view") return H.setSetting("slotView", H.setting("slotView") === "compact" ? "detailed" : "compact");
     if (c === "choose") return repo && openOverlay({ mod: "har", kind: "dialog", width: 640, height: 0.82, props: { view: "free", repo } });
     if (!slot?.active) return;
@@ -134,7 +145,7 @@ export default class Har extends View {
 
   // ---- actions ---------------------------------------------------------------
   tab(name, argv, folder, opts = {}) {
-    run("tab.new", { name, folder, argv, ...(opts.space ? { space: opts.space } : {}), focus: opts.focus ?? true });
+    run("tab.new", { name, folder, argv: H.withPath(argv), ...(opts.space ? { space: opts.space } : {}), focus: opts.focus ?? true });
   }
 
   agent() { return this.agentList.find((a) => a.key === H.agentChoice()) ?? this.agentList[0] ?? { key: "claude", name: "Claude Code", run: ["claude"] }; }
@@ -144,7 +155,7 @@ export default class Har extends View {
     const agent = agentList.find((a) => a.key === agentKey) ?? { name: agentKey, run: [agentKey] };
     run("space.new", {
       name: `${H.base(repo)}#${id}`, folder: repo,
-      argv: ["bash", H.launchScript(), repo, String(id), free, "", "", "--", ...agent.run],
+      argv: H.withPath(["bash", H.launchScript(), repo, String(id), free, "", "", "--", ...agent.run]),
     });
     H.selectSlot(id);
   }
@@ -183,7 +194,7 @@ export default class Har extends View {
   }
 
   confirm(title, detail, name, argv, repo) {
-    openOverlay({ mod: "confirm", kind: "dialog", width: 420, props: { title, detail, command: { name: "tab.new", args: { name, folder: repo, argv } } } });
+    openOverlay({ mod: "confirm", kind: "dialog", width: 420, props: { title, detail, command: { name: "tab.new", args: { name, folder: repo, argv: H.withPath(argv) } } } });
   }
 
   addRepo(dir) {
@@ -269,6 +280,10 @@ export default class Har extends View {
     if (this.view === "settings") return this.renderSettings(t, cx);
     // the poller follows repo switches and refresh requests
     if (!checking() && (H.tick() !== this.loadedTick || H.currentRepo() !== this.loadedRepo)) this.refresh(cx);
+    // tools looked up again (Settings / Retry): reload every project, not just the current one
+    const epoch = H.toolsEpoch();
+    if (!checking() && this.toolsEpoch !== undefined && epoch !== this.toolsEpoch) for (const r of H.repos()) this.refresh(cx, r);
+    this.toolsEpoch = epoch;
     return this.renderTree(t, cx);
   }
 
@@ -300,11 +315,17 @@ export default class Har extends View {
         .child(this.busy?.has(H.currentRepo()) ? div().px(4).text_size(12).text_color(t.dim).frames(SPIN, 90) : div())
         .child(iconBtn("tv-toggle", compact ? "rows" : "list", compact ? "Detailed slots" : "Compact slots",
           () => H.setSetting("slotView", compact ? "detailed" : "compact"), false))
-        .child(iconBtn("tv-settings", "settings", "Settings", () => openOverlay({ mod: "har", kind: "popup", width: 280, height: 300, props: { view: "settings" } }), false))
+        .child(iconBtn("tv-settings", "settings", "Settings", () => openSettings(), false))
         .child(iconBtn("tv-add", "plus", "Add a project folder", (cx) => cx.spawn(async (cx) => { this.addRepo(await pickFolder({ prompt: "Add harness" })); cx.notify(); }), false)))
       .when(Boolean(this.search), (e) => e.child(Input.new(this.search).h(28).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(12).text_color(t.foreground)));
 
+    const tools = H.toolsInfo();
     const body = v_flex().px(6).py(6).gap(2)
+      .when(Boolean(tools?.error), (e) => e.child(v_flex().m(4).p(9).gap(6).rounded(7).bg(t.ansi1 + "18").border_1().border_color(t.ansi1 + "55")
+        .child(div().text_size(11).text_color(t.ansi1).child(tools.error))
+        .child(h_flex().gap(6)
+          .child(this.button("tools-settings", "Set har path…", t, () => openSettings(), { icon: "settings" }))
+          .child(this.button("tools-retry", "Retry", t, () => H.resetBins(), { icon: "refresh" })))))
       .children(groups.flatMap((g) => this.projectGroup(g, cur, sel, compact, showFree, q, t)))
       .when(Boolean(q) && !groups.length && !others.length, (e) => e.child(div().px(8).py(6).text_size(11.5).text_color(t.dim)
         .child(this.found ? "Nothing matches." : "Searching this machine…")))
@@ -359,7 +380,7 @@ export default class Har extends View {
             .child(div().flex_1()).child(this.icon("play", t.dim, 11))
         : div().pl(14).children(free.map((s) => this.slotCard(r, snap, s, false, t))));
     }
-    if (snap.error) rows.unshift(div().pl(30).text_size(10.5).text_color(t.ansi1).truncate().child(snap.error));
+    if (snap.error && !H.toolsInfo()?.error) rows.unshift(div().pl(30).text_size(10.5).text_color(t.ansi1).truncate().child(snap.error));
     return [head, v_flex().gap(compact ? 0 : 6).pb(4).children(rows)];
   }
 
@@ -439,6 +460,14 @@ export default class Har extends View {
           .child(live?.running ? "verifying" : last ? `${last.status} · ${H.ago(last.at)}` : "not verified")));
   }
 
+  savePaths() {
+    const clean = (v) => { v = (v ?? "").trim(); return v.startsWith("~/") ? H.home() + v.slice(1) : v; };
+    H.setSetting("harPath", clean(this.harInput?.value()) || null);
+    H.setSetting("nodePath", clean(this.nodeInput?.value()) || null);
+    H.resetBins();
+    this.saved = true;
+  }
+
   // ---- popup: settings -------------------------------------------------------------
   renderSettings(t, cx) {
     const p = props() ?? {};
@@ -451,6 +480,9 @@ export default class Har extends View {
       .when(Boolean(hint), (e) => e.child(div().text_size(10.5).text_color(t.dim).child(hint)));
     const agents = (this.agentList.length ? this.agentList : [{ key: "claude", name: "Claude Code" }]);
     const cur = this.agentList.find((a) => a.key === H.agentChoice());
+    const info = H.toolsInfo();
+    const toolsLine = !info ? "Looking for har, node and gh…" : info.error ? info.error
+      : `har ${H.tilde(info.har)} · node ${H.tilde(info.node)}${info.gh ? ` · gh ${H.tilde(info.gh)}` : " · gh not found (no PR state)"} — found via ${info.how}`;
     return v_flex().id("har-settings").size_full().p(14).gap(14).bg(t.popover).text_color(t.foreground).text_size(12)
       .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(13).child("HAR panel")).child(div().text_size(10.5).text_color(t.dim).child("Esc")))
       .child(row("Slot view", "Compact: one line per slot. Detailed: cards with branch, PR, cost and pipeline.",
@@ -459,8 +491,19 @@ export default class Har extends View {
         seg("ag", agents.map((a) => [a.key, a.key]), H.agentChoice(), (k) => H.setAgentChoice(k))))
       .child(row("Free slots", "Show free slots under each project.",
         seg("sf", [["on", "Show"], ["off", "Hide"]], H.setting("showFree") ? "on" : "off", (k) => H.setSetting("showFree", k === "on"))))
+      .child(v_flex().gap(6).pt(4).border_t(1).border_color(t.border)
+        .child(div().pt(8).text_size(12).child("Tools"))
+        .child(div().text_size(10.5).text_color(info?.error ? t.ansi1 : t.dim).child(toolsLine))
+        .when(Boolean(this.harInput), (e) => e
+          .child(div().text_size(10.5).text_color(t.dim).child("har path"))
+          .child(Input.new(this.harInput).h(28).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(11.5).text_color(t.foreground))
+          .child(div().text_size(10.5).text_color(t.dim).child("node path"))
+          .child(Input.new(this.nodeInput).h(28).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(11.5).text_color(t.foreground))))
       .child(div().flex_1())
-      .child(h_flex().justify_end().child(this.button("set-done", "Done", t, () => closeOverlay(p.overlay), { primary: true })));
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1().text_size(10.5).text_color(t.dim).child(this.saved ? "Saved — looking for the tools again…" : "Leave the paths empty to find them automatically."))
+        .child(this.button("set-save", "Save paths", t, (cx) => { this.savePaths(); cx.notify(); }))
+        .child(this.button("set-done", "Done", t, () => closeOverlay(p.overlay), { primary: true })));
   }
 
   // ---- dialog: free a slot -------------------------------------------------------
@@ -825,5 +868,7 @@ export default class Har extends View {
         .on_click(() => repo && H.openMissionControl(repo, H.currentSlot())).child("Mission Control ↗"));
   }
 }
+
+function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 460, height: 560, props: { view: "settings" } }); }
 
 function rank(v) { return { free: 0, safe: 1, caution: 2, keep: 3 }[v] ?? 4; }

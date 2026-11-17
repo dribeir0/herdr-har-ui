@@ -6,6 +6,7 @@ import { exec, readTextFile, hc, panes, spaces, agents, shared, setShared, home 
 export const MC_URL = "http://localhost:3847";
 const KEY = { repos: "har.repos", repo: "har.repo", slot: "har.slot", snap: "har.snapshot", tick: "har.refresh" };
 
+export { home };
 export const base = (p) => (p || "").replace(/\/+$/, "").split("/").pop() || p;
 export const tilde = (p) => (p && p.startsWith(home()) ? "~" + p.slice(home().length) : p || "");
 
@@ -79,21 +80,67 @@ function trimSlot(s) {
   };
 }
 
-// herdr's exec PATH is not the login shell's (nvm/volta/asdf installs are missing),
-// and `har` is a `#!/usr/bin/env node` script: resolve node + har + gh once, run `node har`.
-let resolved = null;
+// herdr starts mods with its own PATH, which usually lacks the user's shell setup
+// (nvm/volta/fnm/mise/asdf/Homebrew). bin/find-tools.sh finds har, node and gh — Settings
+// paths, then the login shell, then the interactive shell (detached), then the usual install
+// folders — and every command then runs with those folders first on PATH, so `#!/usr/bin/env node`
+// scripts and volta/asdf shims work.
+let resolved = null, resolving = null;
+const WRAP = 'PATH="$0:$PATH"; exec "$@"';
+
 async function bins() {
-  if (resolved) return resolved;
-  const shell = (await exec("sh", ["-c", "echo $SHELL"]).catch(() => null))?.stdout.trim() || "/bin/bash";
-  const r = await exec(shell, ["-lc", "for b in node har gh; do printf '%s=%s\\n' $b \"$(command -v $b)\"; done"], { timeout: 15000 });
-  const map = Object.fromEntries(r.stdout.split("\n").map((l) => /^(\w+)=(\/\S*)\s*$/.exec(l.trim())).filter(Boolean).map((m) => [m[1], m[2]]));
-  if (!map.node || !map.har) throw new Error("`har` not found on your login shell PATH — npm install -g @osfactory/har");
-  resolved = map;
-  return resolved;
+  const epoch = shared("har.toolsEpoch") ?? 0;   // bumped by resetBins in any panel
+  if (resolved && resolved.epoch === epoch) return resolved;
+  resolved = null;
+  resolving ??= (async () => {
+    try {
+      const r = await exec("sh", [`${BIN()}/find-tools.sh`, "", setting("harPath") ?? "", setting("nodePath") ?? ""], { timeout: 60000 });
+      const kv = {}, tried = [];
+      for (const line of (r.stdout ?? "").split("\n")) {
+        const m = /^(\w+)=(.*)$/.exec(line);
+        if (!m) continue;
+        if (m[1] === "tried") tried.push(m[2]); else kv[m[1]] = m[2];
+      }
+      if (!kv.har || !kv.node) {
+        const err = new Error(["`har` not found. Tried:", ...tried.map((t) => `• ${t}`),
+          "Fix: npm i -g @osfactory/har, or set its path in HAR Settings (gear in the sidebar). See docs/guide.md → Troubleshooting."].join("\n"));
+        err.tried = tried;
+        throw err;
+      }
+      resolved = { path: kv.path, har: kv.har, node: kv.node, gh: kv.gh || null, how: kv.how, tried, epoch };
+      setShared("har.tools", { har: kv.har, node: kv.node, gh: kv.gh || null, how: kv.how, at: Date.now() });
+      return resolved;
+    } catch (e) {
+      setShared("har.tools", { error: String(e.message ?? e), at: Date.now() });
+      throw e;
+    } finally { resolving = null; }
+  })();
+  return resolving;
+}
+/** Forget the found tools (after a Settings change); the next command looks again. */
+export function resetBins() {
+  resolved = null; prCache.clear();
+  setShared("har.tools", null);
+  setShared("har.toolsEpoch", Date.now());   // every panel's copy of the mod looks again
+  bump();
+}
+/** What the last lookup found, for Settings: {har, node, gh, how} or {error}. */
+export const toolsInfo = () => shared("har.tools") ?? null;
+export const toolsEpoch = () => shared("har.toolsEpoch") ?? 0;
+
+/** Runs a found tool with the found folders first on PATH (herdr's exec takes no env). */
+async function runTool(cmd, args, opts) {
+  const b = await bins();
+  return exec("sh", ["-c", WRAP, b.path, cmd, ...args], opts);
 }
 export async function har(args, opts = {}) {
-  const { node, har } = await bins();
-  return exec(node, [har, ...args], { timeout: 30000, ...opts });
+  return runTool((await bins()).har, args, { timeout: 30000, ...opts });
+}
+/** argv for a herdr terminal, with the found folders first on PATH ("har" stands for the found har). */
+export function withPath(argv) {
+  if (!resolved || resolved.epoch !== (shared("har.toolsEpoch") ?? 0)) return argv;
+  const [cmd, ...rest] = argv;
+  return ["sh", "-c", WRAP, resolved.path, cmd === "har" ? resolved.har : cmd, ...rest];
 }
 const BIN = () => `${home()}/.config/herdr-app/mods/har/bin`;
 export const launchScript = () => `${BIN()}/launch-agent.sh`;
@@ -101,7 +148,7 @@ export const launchScript = () => `${BIN()}/launch-agent.sh`;
 async function collect(repo, slots) {
   const { node } = await bins();
   const list = slots.filter((s) => s.active).map((s) => ({ id: s.id, workDir: s.workDir, baseBranch: s.baseBranch }));
-  const r = await exec(node, [`${BIN()}/collect.mjs`, repo, JSON.stringify(list)], { timeout: 20000 });
+  const r = await runTool(node, [`${BIN()}/collect.mjs`, repo, JSON.stringify(list)], { timeout: 20000 });
   return JSON.parse(r.stdout);
 }
 
@@ -112,7 +159,7 @@ async function pullRequests(repo) {
   if (c && Date.now() - c.at < 60000) return c.list;
   const { gh } = await bins();
   if (!gh) return null;
-  const r = await exec(gh, ["pr", "list", "--state", "all", "--limit", "100", "--json", "number,state,headRefName,headRefOid,url,title,isDraft,updatedAt"], { cwd: repo, timeout: 20000 }).catch(() => null);
+  const r = await runTool(gh, ["pr", "list", "--state", "all", "--limit", "100", "--json", "number,state,headRefName,headRefOid,url,title,isDraft,updatedAt"], { cwd: repo, timeout: 20000 }).catch(() => null);
   let list = null;
   try { list = r && r.code === 0 ? JSON.parse(r.stdout) : null; } catch { /* not a GitHub repo */ }
   prCache.set(repo, { at: Date.now(), list });

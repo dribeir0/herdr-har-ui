@@ -13,7 +13,7 @@ This guide covers every part of the HAR layout for herdr: what each panel shows,
 - [Settings](#settings)
 - [Key commands](#key-commands)
 - [Where the data comes from](#where-the-data-comes-from)
-- [Troubleshooting](#troubleshooting)
+- [Troubleshooting](#troubleshooting) (and [how the tools are found](#how-the-tools-are-found))
 - [Customising the layout](#customising-the-layout)
 - [Developing](#developing)
 
@@ -212,6 +212,7 @@ Open them with the gear in the tree header, or `har.settings`.
 | Slot view | **Compact** (one line per slot) or **Detailed** (cards) |
 | Agent CLI | Any installed agent herdr knows, e.g. `claude`, `codex`. Used by new discussions, Launch and Start agent, and shown next to "HAR" in the header. |
 | Free slots | Show or hide free slots under each project |
+| Tools | Shows where `har`, `node` and `gh` were found and how. **har path** / **node path** set them by hand (`~/` works); leave them empty to find them automatically. **Save paths** looks again right away. |
 
 Settings, the project list and which projects are open are saved in herdr's shared state, so they survive restarts.
 
@@ -256,7 +257,7 @@ A PR is matched to a slot only when the slot has commits of its own, by branch n
 
 | Symptom | Fix |
 |---|---|
-| "`har` not found on your login shell PATH" | Install HAR globally: `npm i -g @osfactory/har`. The mod finds `node`, `har` and `gh` by asking your login shell (`$SHELL -lc`). Make sure your nvm/volta setup is loaded in a login shell, not only in interactive ones. |
+| "`har` not found" (red box in the sidebar) | The box lists every place the panel looked. Install HAR with `npm i -g @osfactory/har`, or open **Set har path…** and paste the output of `command -v har` from your terminal (and `command -v node` if `node` isn't next to it). Then press **Retry**. See [How the tools are found](#how-the-tools-are-found). |
 | Usage says "Mission Control is not running" | `har control up`, or check `http://localhost:3847` |
 | Slot usage shows "—" while "Other" is large | Mission Control couldn't match those sessions to a slot, e.g. they ran in the main checkout. That's how Mission Control attributes usage; the panel only displays it. |
 | "PRs unknown (gh)" | Install `gh` and run `gh auth login`. Projects whose remote isn't on GitHub show no PRs. |
@@ -264,6 +265,25 @@ A PR is matched to a slot only when the slot has commits of its own, by branch n
 | The layout didn't change after editing `har.json` | Switch away and back (`ctrl-shift-l`), or run `herdr-app do layout.switch --name har`. |
 | A panel shows a render error | Run `herdr-app check ~/.config/herdr-app/mods/har` for the stack trace. |
 | The agent closed right after the launch | You're in a shell in the worktree. Rerun the command printed above the prompt, then check the agent's own output. |
+
+### How the tools are found
+
+herdr starts its panels with its own PATH, which usually lacks what your shell setup adds (nvm, volta, fnm, mise, asdf, Homebrew…). `mods/har/bin/find-tools.sh` looks for `har`, `node` and `gh` in this order and stops as soon as `har` and `node` are both found:
+
+1. **Settings:** the har path and node path, if you set them.
+2. **Your login shell:** `$SHELL -l`, asked in its own syntax (sh, bash, zsh, fish and nu all work). This covers `~/.zprofile`, `~/.bash_profile`, `~/.profile` and fish's `config.fish`.
+3. **Your interactive shell:** `bash -i` or `zsh -l -i`, for setups that only live in `~/.bashrc` or `~/.zshrc` (where the nvm and volta installers put themselves). It runs in its own session with no terminal (`setsid`, or `perl` when `setsid` is missing), so it can't take over herdr's terminal.
+4. **The usual install folders:** nvm (newest version first), volta, fnm (Linux and macOS), mise, asdf, nodenv, n, bun, `~/.npm-global/bin`, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`.
+
+When `har` is found, `node` is taken from the same folder if it's there, so both come from the same nvm/fnm version. Every command the panels run, including the terminals they open, then starts with those folders first on PATH. That's why volta and asdf shims and `#!/usr/bin/env node` scripts work.
+
+To see what the panel will find, run the script yourself with a minimal environment, like herdr's:
+
+```bash
+env -i HOME="$HOME" PATH=/usr/bin:/bin sh ~/.config/herdr-app/mods/har/bin/find-tools.sh
+```
+
+It prints `har=`, `node=`, `gh=`, `how=` (which step found them) and a `tried=` line for each step that didn't.
 
 ## Customising the layout
 
