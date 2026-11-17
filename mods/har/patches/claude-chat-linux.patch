@@ -1,17 +1,19 @@
-From f47c5b0095c128e87e037ad3a8af9eff0cb08513 Mon Sep 17 00:00:00 2001
+From b71480d6a29ebdbe72ae34347a31d28dfb04d013 Mon Sep 17 00:00:00 2001
 From: Antoine <antoine.frau@kerno.io>
 Date: Tue, 17 Nov 2026 22:30:58 +0100
 Subject: [PATCH] Run on Linux and under wrappers: bash when there's no zsh,
- wl-paste/xclip for pasted images, find Claude Code under the terminal's
- foreground process
+ wl-paste/xclip for pasted images, find and talk to Claude Code under the
+ terminal's foreground process
 
 ---
  mods/claude-chat/composer.js |  2 +-
+ mods/claude-chat/draft.js    | 11 +++++++++--
  mods/claude-chat/images.js   | 17 +++++++++++++++--
  mods/claude-chat/main.js     |  2 +-
+ mods/claude-chat/send.js     |  4 ++--
  mods/claude-chat/session.js  | 19 ++++++++++++++++---
  mods/claude-chat/slash.js    |  9 ++++++++-
- 5 files changed, 41 insertions(+), 8 deletions(-)
+ 7 files changed, 52 insertions(+), 12 deletions(-)
 
 diff --git a/mods/claude-chat/composer.js b/mods/claude-chat/composer.js
 index b78eae0..807570b 100644
@@ -26,6 +28,33 @@ index b78eae0..807570b 100644
      };
      this.run = serial();
      this.images = []; this.sent = []; this.note = null; this.ids = 0; this.focused = false;
+diff --git a/mods/claude-chat/draft.js b/mods/claude-chat/draft.js
+index cb4797a..54d14aa 100644
+--- a/mods/claude-chat/draft.js
++++ b/mods/claude-chat/draft.js
+@@ -3,13 +3,20 @@
+ export const SET_ASIDE = "ctrl+s";
+ export const STASH_HELD = /›[ \t]*stashed[ \t]*$/m;
+ 
++// Whether Claude Code is the terminal's program. It can run under a wrapper that keeps a shell open after it, as
++// `bash -c '"$@"; exec $SHELL' chat claude`: the foreground is then bash, with `claude` in its argv and the session
++// reporting itself as claude-code. Once Claude Code exits the wrapper becomes a plain shell, and neither holds.
++const CLAUDE_ARG = /(^|\/)claude$/;
++export const isClaude = (info) => Boolean(info?.foreground?.name?.startsWith("claude")
++  || (info?.status?.app === "claude-code" && info?.foreground?.argv?.some?.((a) => CLAUDE_ARG.test(String(a)))));
++
+ // True when a half-typed line may have gone aside. Claude Code puts it back after the next submit. Ctrl+S does nothing on an
+ // empty prompt, but it brings a held stash back, and a line typed over one replaces it, so it isn't pressed while one is held.
+ // A shell left after Claude Code exits would freeze on it.
+ async function setDraftAside(io, terminal) {
+   try {
+-    const { foreground } = JSON.parse((await io.hc(["get", "--json", terminal])).stdout);
+-    if (!foreground?.name?.startsWith("claude") || STASH_HELD.test((await io.hc(["read", terminal])).stdout)) return false;
++    const info = JSON.parse((await io.hc(["get", "--json", terminal])).stdout);
++    if (!isClaude(info) || STASH_HELD.test((await io.hc(["read", terminal])).stdout)) return false;
+     await io.hc(["keys", terminal, SET_ASIDE]);
+     return true;
+   } catch { return false; }
 diff --git a/mods/claude-chat/images.js b/mods/claude-chat/images.js
 index 864a94c..4f0f4c1 100644
 --- a/mods/claude-chat/images.js
@@ -74,6 +103,28 @@ index 634812d..f84e1c2 100644
        if (!newest()) return;
        if (!session) { if (!this.session && !forced) cx.notify(); return; }
        const moved = sessionMoved(this.session, session);
+diff --git a/mods/claude-chat/send.js b/mods/claude-chat/send.js
+index ec532f4..359d2c5 100644
+--- a/mods/claude-chat/send.js
++++ b/mods/claude-chat/send.js
+@@ -1,7 +1,7 @@
+ // What the composer does to a live session: sending, stopping, and Claude Code's own queue. No Herdr imports, so
+ // `node --test` can load this file. `io` holds `hc(args)` and `pause(ms)`. Everything read back from a screen or a
+ // transcript is data, and only ever decides whether a fixed key is pressed.
+-import { sendAside, STASH_HELD } from "./draft.js";
++import { isClaude, sendAside, STASH_HELD } from "./draft.js";
+ import { dialogUp } from "./route.js";
+ 
+ // The screen shows the prompt between its last two rules, starting at `❯`, with later rows indented by two.
+@@ -91,7 +91,7 @@ export async function sessionNow(io, terminal) {
+   if (!ADDRESS.test(terminal ?? "")) return { live: false };
+   const r = await io.hc(["get", "--json", terminal]).catch(() => null);
+   const info = r?.code === 0 ? parse(r.stdout) : null;
+-  if (info?.state !== "live" || !info.foreground?.name?.startsWith("claude")) return { live: false };
++  if (info?.state !== "live" || !isClaude(info)) return { live: false };
+   return { live: true, state: info.status?.state ?? null, cols: info.cols ?? 0 };
+ }
+ 
 diff --git a/mods/claude-chat/session.js b/mods/claude-chat/session.js
 index 34ae664..e147ccb 100644
 --- a/mods/claude-chat/session.js
