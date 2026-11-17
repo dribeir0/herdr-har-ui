@@ -1,79 +1,83 @@
 # herdr-har-ui
 
-A [herdr](https://herdr.dev) layout for [HAR](https://github.com/os-factory/har): your projects, their agent slots, the coding agents running in them, verification pipelines and OTel cost — next to your terminals.
+A [herdr](https://herdr.dev) layout for [HAR](https://github.com/os-factory/har). It puts your HAR projects, their agent slots, the coding agents running in them, the verification pipeline and OTel cost right next to your terminals.
 
-## What you get
+![The HAR layout in herdr: project tree on the left, project overview on the right](docs/screenshots/default-view.png)
 
-**Left — project tree.** Every HAR project (name + path) with its slots underneath.
-- Compact (one line per slot: status, `#id`, work unit, PR, `↑unpushed`, `●dirty`, stale, verify ✓/✗) or detailed cards — toggle in the header.
-- One search box over project names/paths, slot ids, work units and titles, branches, PR numbers and titles, last commits and agent prompts. Other harnesses found on the machine show up as results you can add.
-- **+** on a project starts a new discussion: launches the first free slot and opens your agent CLI (claude / codex) inside the new worktree. When every slot is taken, a dialog ranks the slots from safest to free (PR merged, nothing committed) to keep (unpushed commits, uncommitted changes, agent still working) and frees the one you pick with `teardown` or `complete`.
+- **Left:** every HAR project, with its slots listed underneath, one line per slot.
+- **Right:** the selected project's overview (usage, pipeline health, factory lines, work units) or the selected slot.
+- **Bottom:** a status bar for the selected project.
 
-**Right — overview or slot.**
-- Project overview: OTel usage (repo total, per slot, per model), pipeline health (last 16 verifies per stage, pass rate, median, flaky stages), factory lines (stations), work units (slot, attempts, cost).
-- Slot view: work unit, branch/base, Git & PR state with a free-safety verdict, usage, previews, herdr agents in the worktree, live verification pipeline (ticks while `har env verify` runs in its tab), readiness, recent runs. Buttons: Verify --full, Verify, Open space, Start agent, Mission Control, Complete…, Teardown….
+## Features
 
-**Bottom — status bar.** Slots in use, agents working / needing you, failing verifies, stale slots, repo cost.
+### Project tree
+
+- Each project is one line: name, path, slots in use, and a **+** that starts a new discussion.
+- Each slot is one line: a status dot, `#id`, work unit, PR number, `↑` unpushed commits, `●` uncommitted changes, `stale`, and the last verify result.
+- One search box covers projects, slots, work units, branches, PRs, commits and agent prompts. It also finds HAR projects on this machine that you haven't added yet.
+- A header button switches to detailed cards, which show the branch, ahead/behind, PR state and a strip with one cell per verification stage.
+
+### New discussion
+
+**+** launches the project's first free slot, then starts your agent CLI (Claude Code or Codex) inside the new worktree.
+
+When every slot is taken, a dialog ranks the slots from safest to free to riskiest. Each slot shows PR state, push state, uncommitted changes, last verify, open agents, cost and last commit. You choose to free it with **Teardown** or **Complete**.
+
+![Slot chooser when every slot is taken](docs/screenshots/free-slot-popup.png)
+
+### Overview and slot view
+
+The **project overview** shows:
+- **OTel usage:** the repo total, each model and each slot.
+- **Pipeline health:** the last 16 verifies per stage, with pass rate, median duration and flaky stages.
+- **Factory lines:** stations shown as pills.
+- **Work units:** the slot working on each, attempts, cost and last activity.
+
+![Detailed slot cards, factory lines and work units](docs/screenshots/detail-view.png)
+
+The **slot view** shows the work unit, branch and base, Git & PR state with a "safe to free" verdict, and usage. It also lists previews, the herdr agents in the worktree, readiness warnings and recent runs. Its verification pipeline updates live while `har env verify` runs in its tab. Its buttons are Verify --full, Verify, Open space, Start agent, Mission Control, Complete… and Teardown….
+
+![Work units with their slot, attempts and cost](docs/screenshots/work-unit-view.png)
 
 ## Requirements
 
-- herdr desktop (`herdr-app`)
-- `@osfactory/har` on your login shell PATH (`npm i -g @osfactory/har`) — nvm/volta installs are found through your login shell
-- optional: `gh` (PR state), Mission Control running (`har control up`) for OTel cost and tokens
+- herdr desktop app (`herdr-app`)
+- [`@osfactory/har`](https://www.npmjs.com/package/@osfactory/har) installed in your login shell (`npm i -g @osfactory/har`). nvm, volta and asdf installs are found through your login shell.
+- Optional: `gh`, logged in, for PR state
+- Optional: Mission Control (`har control up`) for OTel cost and tokens
 
 ## Install
 
 ```bash
 git clone https://github.com/os-factory/herdr-har-ui
 cd herdr-har-ui
-./install.sh          # or ./install.sh --link to work on it in place
+./install.sh            # copies into ~/.config/herdr-app
+./install.sh --link     # or symlinks, to edit in place
 ```
 
-Then in herdr: `ctrl-shift-l` → **HAR**. On first run the project list is seeded from `~/.har/repos.json`; add more with **+** or the search box.
+Then switch to the layout in herdr with `ctrl-shift-l` → **HAR**. On first run, the project list starts with the projects HAR already knows (`~/.har/repos.json`). Add more with **+** in the header or from the search results.
 
-## Settings and keys
+## Documentation
 
-The gear in the tree header sets the slot view (compact/detailed), the agent CLI new slots start, and whether free slots are listed.
+The **[user guide](docs/guide.md)** covers:
+- every panel, and how to read the compact rows;
+- what search matches;
+- how slots are ranked for freeing;
+- settings and key commands;
+- where each number comes from;
+- troubleshooting and customising the layout.
 
-Commands you can bind in `~/.config/herdr-app/keys.json`:
-
-| Command | Does |
-|---|---|
-| `har.new` | New discussion in the selected project |
-| `har.choose` | Open the slot chooser |
-| `har.slot-1` … `har.slot-N` | Select a slot |
-| `har.overview` | Back to the project overview |
-| `har.verify` / `har.verify-full` | Verify the selected slot |
-| `har.open` / `har.agent` | Open the slot's space / start the agent in it |
-| `har.toggle-view` / `har.settings` | Compact ↔ detailed / settings |
-| `har.refresh` / `har.next-repo` | Refresh / next project |
-
-## Where the data comes from
-
-| Panel data | Source |
-|---|---|
-| Slots, readiness, previews | `har env status --json` |
-| Runs, pipeline | `har env runs list --json`, `.har/stages.json`, live parse of the verify tab |
-| Factory lines | `har line status --json` |
-| Work units | `.har/work-units/`, `.har/work-attempts/` |
-| Unpushed / merged / dirty | `git` in each slot worktree (`mods/har/bin/collect.mjs`) |
-| PRs | `gh pr list` (cached 60s) |
-| Cost & tokens | Mission Control `/api/repos/:id/usage` (OTel) |
-
-Nothing is written by the panels except through the HAR commands you click (launch, verify, complete, teardown), each run in a visible herdr tab.
-
-## Layout
+## Repository layout
 
 ```
-mods/har/main.js          views: tree, detail, status, free (dialog), settings (popup)
-mods/har/data.js          data layer (har CLI, git, gh, Mission Control)
-mods/har/bin/             launch-agent.sh (free → launch → agent), collect.mjs (git + work units)
-layouts/har.json          the herdr layout
+install.sh                 copy or link into ~/.config/herdr-app
+layouts/har.json           the herdr layout (sidebar tree, work area, right panel, status bar)
+mods/har/main.js           views: tree, detail, status, free (dialog), settings
+mods/har/data.js           data layer: har CLI, git, gh, Mission Control
+mods/har/bin/              launch-agent.sh (free → launch → agent), collect.mjs (git + work units)
+mods/har/icons/            Lucide icons (ISC)
+docs/                      user guide and screenshots
 ```
-
-`herdr-app types mods/har` writes `gpui-kit.d.ts` for editor completion (not committed).
-
-Icons are from [Lucide](https://lucide.dev) (ISC).
 
 ## License
 
