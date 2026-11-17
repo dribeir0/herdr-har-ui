@@ -1,0 +1,829 @@
+// HAR for herdr: projects, agent slots, their herdr agents, usage and the verification pipeline.
+// One mod, five roles chosen by props.view:
+//   "tree"     – sidebar: projects with their slots under each, search, compact/detailed (also the data poller)
+//   "settings" – popup: slot view, agent CLI, free slots
+//   "detail"   – right panel: the selected slot, or the project overview (usage, pipeline health, lines, work)
+//   "status"   – bottom bar
+//   "free"     – dialog: every slot is taken, pick one to free for a new discussion
+// Data: `har env status|runs --json`, `har line status --json`, .har/ records, git, gh, Mission Control (OTel usage).
+
+import { View, div, svg } from "gpui-kit";
+import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
+import { props, theme, run, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
+import * as H from "./data.js";
+
+const ICON = (n) => `mods/har/icons/${n}.svg`;
+const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const POLL_MS = 10000;
+const CLEAR = "#00000000";
+
+function statusColor(t, s) {
+  return { blocked: t.blocked, done: t.done, working: t.working, idle: t.idle, pass: t.ansi2, fail: t.ansi1, running: t.working, skipped: t.dim }[s] ?? t.dim;
+}
+function verdictColor(t, v) { return { free: t.dim, safe: t.ansi2, caution: t.blocked, keep: t.ansi1 }[v] ?? t.dim; }
+const VERDICT = { free: "free", safe: "safe to free", caution: "check first", keep: "keep" };
+
+export default class Har extends View {
+  init(_props, cx) {
+    this.view = props()?.view ?? "tree";
+    this.loading = false;
+    this.live = null;          // live verify parse for the selected slot (detail view)
+    this.agentList = [];       // installed coding agents (knownAgents)
+    if (checking()) return;
+    if (this.view === "tree" || this.view === "free" || this.view === "settings") this.loadAgents(cx);
+    if (this.view === "tree") {
+      const seed = props()?.repos ?? [];
+      if (!H.repos().length && seed.length) H.setRepos(H.repos(seed));
+      // first run without a seed: start from the harnesses HAR already knows (~/.har/repos.json)
+      if (!H.repos().length) cx.spawn(async (cx) => {
+        const known = await H.knownRepos().catch(() => []);
+        if (known.length && !H.repos().length) { H.setRepos(known.slice(0, 8)); for (const r of H.repos()) this.refresh(cx, r); }
+        cx.notify();
+      });
+      this.busy = new Set();
+      this.query = "";
+      this.found = null;
+      this.search = InputState.new({ placeholder: "Search repo, work unit, slot, PR, prompt…" });
+      this.search.on("change", (_e, cx) => { this.query = this.search.value(); cx.notify(); });
+      cx.spawn(async (cx) => { this.found = await H.discoverRepos().catch(() => []); cx.notify(); });
+      for (const r of H.repos()) this.refresh(cx, r);
+      cx.timer.every(POLL_MS, (cx) => this.refresh(cx, H.currentRepo()));
+      cx.timer.every(30000, (cx) => { for (const r of H.repos()) if (r !== H.currentRepo()) this.refresh(cx, r); });
+    }
+    if (this.view === "detail") {
+      cx.timer.every(1500, (cx) => this.pollLive(cx));
+      // keys.json: "alt-2": "har.slot-2", "alt-v": "har.verify-full", "alt-n": "har.new", ...
+      cx.spawn(async (cx) => { for (;;) { this.command(await nextCommand(), cx); cx.notify(); } });
+    }
+    if (this.view === "free") {
+      const p = props();
+      const snap = H.snapshot(p.repo);
+      const ranked = (snap?.slots ?? []).map((s) => ({ s, f: H.slotFacts(snap, s) }))
+        .sort((a, b) => rank(a.f.verdict) - rank(b.f.verdict) || new Date(a.s.lastRunAt ?? a.s.since ?? 0) - new Date(b.s.lastRunAt ?? b.s.since ?? 0));
+      this.pick = ranked.find((x) => x.f.verdict !== "keep")?.s.id ?? null;
+      this.freeMode = "teardown";
+      this.armed = false;
+      this.handle = cx.focus_handle();
+      this.handle.focus();
+    }
+  }
+
+  command(c, cx) {
+    const repo = H.currentRepo(), snap = repo ? H.snapshot(repo) : null;
+    const slot = snap?.slots.find((s) => s.id === H.currentSlot());
+    const m = /^slot-(\d+)$/.exec(c);
+    if (m) return H.selectSlot(Number(m[1]));
+    if (c === "overview") return H.selectSlot(null);
+    if (c === "refresh") return H.bump();
+    if (c === "next-repo") { const all = H.repos(); return H.selectRepo(all[(all.indexOf(repo) + 1) % all.length]); }
+    if (c === "new") return this.newDiscussion(repo, cx);
+    if (c === "settings") return openOverlay({ mod: "har", kind: "dialog", width: 320, height: 330, props: { view: "settings" } });
+    if (c === "toggle-view") return H.setSetting("slotView", H.setting("slotView") === "compact" ? "detailed" : "compact");
+    if (c === "choose") return repo && openOverlay({ mod: "har", kind: "dialog", width: 640, height: 0.82, props: { view: "free", repo } });
+    if (!slot?.active) return;
+    if (c === "verify" || c === "verify-full") this.verify(repo, slot, c === "verify-full");
+    if (c === "open") this.openSpace(repo, slot);
+    if (c === "agent") this.startAgent(repo, slot, cx);
+  }
+
+  // ---- data ----------------------------------------------------------------
+  refresh(cx, repo = H.currentRepo()) {
+    if (!repo || this.busy?.has(repo)) return;
+    this.busy?.add(repo);
+    if (repo === H.currentRepo()) { this.loadedTick = H.tick(); this.loadedRepo = repo; }
+    cx.spawn(async (cx) => {
+      try { H.store(repo, await H.load(repo)); }
+      catch (e) { H.store(repo, { ...(H.snapshot(repo) ?? { slots: [], runs: [], stages: [] }), at: Date.now(), error: String(e) }); }
+      finally { this.busy?.delete(repo); cx.notify(); }
+    });
+  }
+
+  loadAgents(cx) {
+    cx.spawn(async (cx) => {
+      const list = await knownAgents().catch(() => []);
+      this.agentList = list.filter((a) => a.installed && a.run?.length);
+      if (!this.agentList.some((a) => a.key === H.agentChoice()) && this.agentList[0]) H.setAgentChoice(this.agentList[0].key);
+      cx.notify();
+    });
+  }
+
+  summarizeAll(cx) {
+    if (this.summarizing) return;
+    this.summarizing = true;
+    cx.spawn(async (cx) => {
+      try { for (const r of H.repos()) { H.storeSummary(r, await H.summarize(r)); cx.notify(); } }
+      finally { this.summarizing = false; }
+    });
+  }
+
+  pollLive(cx) {
+    const repo = H.currentRepo(), id = H.currentSlot();
+    const vt = repo && id != null ? H.verifyTerminal(repo, id) : null;
+    if (!vt) { if (this.live) { this.live = null; H.setLive(null); cx.notify(); } return; }
+    if (this.live?.final && this.live.terminal === vt.terminal) return;
+    cx.spawn(async (cx) => {
+      const parsed = await H.readLiveVerify(vt.terminal).catch(() => null);
+      if (!parsed) return;
+      const wasRunning = this.live?.running;
+      this.live = { ...parsed, terminal: vt.terminal, final: parsed.stages.length > 0 && !parsed.running };
+      H.setLive({ repo, slot: id, terminal: vt.terminal, running: parsed.running, stages: parsed.stages });
+      if (wasRunning && !parsed.running) H.bump();
+      cx.notify();
+    });
+  }
+
+  // ---- actions ---------------------------------------------------------------
+  tab(name, argv, folder, opts = {}) {
+    run("tab.new", { name, folder, argv, ...(opts.space ? { space: opts.space } : {}), focus: opts.focus ?? true });
+  }
+
+  agent() { return this.agentList.find((a) => a.key === H.agentChoice()) ?? this.agentList[0] ?? { key: "claude", name: "Claude Code", run: ["claude"] }; }
+
+  /** Launches slot `id` (freeing it first when `free` is "teardown"/"complete") in its own space, then starts the agent there. */
+  launchWithAgent(repo, id, free = "", agentKey = H.agentChoice(), agentList = this.agentList) {
+    const agent = agentList.find((a) => a.key === agentKey) ?? { name: agentKey, run: [agentKey] };
+    run("space.new", {
+      name: `${H.base(repo)}#${id}`, folder: repo,
+      argv: ["bash", H.launchScript(), repo, String(id), free, "", "", "--", ...agent.run],
+    });
+    H.selectSlot(id);
+  }
+
+  /** New discussion: first free slot, or ask which one to free. */
+  newDiscussion(repo, cx) {
+    const snap = repo ? H.snapshot(repo) : null;
+    if (!snap) return;
+    const free = snap.slots.find((s) => !s.active);
+    if (free) return this.launchWithAgent(repo, free.id);
+    openOverlay({ mod: "har", kind: "dialog", width: 640, height: 0.82, props: { view: "free", repo } });
+  }
+
+  verify(repo, slot, full) {
+    const old = H.verifyTerminal(repo, slot.id);
+    if (old) run("tab.close", { id: old.tab, confirmed: true });
+    const space = H.slotSpace(slot);
+    this.live = null;
+    this.tab(H.verifyTabName(repo, slot.id), ["har", "env", "verify", String(slot.id), ...(full ? ["--full"] : []), "--repo", repo], repo,
+      { space: space?.id, focus: false });
+    H.selectSlot(slot.id);
+  }
+
+  openSpace(repo, slot) {
+    const sp = H.slotSpace(slot);
+    if (sp) return run("space.select", { id: sp.id });
+    if (!slot.workDir) return;
+    run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir });
+  }
+
+  startAgent(repo, slot) {
+    const agent = this.agent();
+    const sp = H.slotSpace(slot);
+    if (sp) run("tab.new", { space: sp.id, folder: slot.workDir, argv: agent.run, name: agent.name });
+    else run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir, argv: agent.run });
+  }
+
+  confirm(title, detail, name, argv, repo) {
+    openOverlay({ mod: "confirm", kind: "dialog", width: 420, props: { title, detail, command: { name: "tab.new", args: { name, folder: repo, argv } } } });
+  }
+
+  addRepo(dir) {
+    if (!dir) return;
+    const list = H.repos();
+    if (!list.includes(dir)) H.setRepos([...list, dir]);
+    H.selectRepo(dir);
+  }
+
+  // ---- small parts -----------------------------------------------------------
+  icon(name, color, size = 13) { return svg(ICON(name)).size(size).flex_none().text_color(color); }
+
+  button(id, label, t, onClick, opts = {}) {
+    const primary = opts.primary, danger = opts.danger;
+    const fill = primary ? (danger ? t.ansi1 : t.solid) : CLEAR;
+    const fg = primary ? t.solid_foreground : danger ? t.ansi1 : t.foreground;
+    return h_flex().id(id).h(opts.h ?? 26).px(9).gap(5).items_center().flex_none().rounded(6).cursor_pointer().text_size(11.5)
+      .border_1().border_color(primary ? fill : danger ? t.ansi1 + "88" : t.border)
+      .bg(fill).text_color(fg)
+      .hover((s) => s.bg(primary ? fill : t.hover).opacity(0.92))
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); })
+      .when(Boolean(opts.icon), (e) => e.child(this.icon(opts.icon, primary ? t.solid_foreground : danger ? t.ansi1 : t.muted, 12)))
+      .child(label);
+  }
+
+  dot(color, size = 8) { return div().size(size).flex_none().rounded(size / 2).bg(color); }
+  pulse(color, size = 8) { return div().size(size).flex_none().rounded(size / 2).bg(color).loop("opacity", { from: 0.35, to: 1, period: 1100 }); }
+
+  chip(text, color, t, opts = {}) {
+    const c = div().px(5).py(0.5).flex_none().rounded(4).border_1().border_color(color + "66").text_size(10).text_color(color).child(text);
+    if (!opts.url) return c;
+    return c.id(opts.id ?? `chip-${text}`).cursor_pointer().hover((s) => s.bg(color + "22")).tooltip(opts.url)
+      .on_click((_e, cx) => { cx.stop_propagation(); H.openUrl(opts.url); });
+  }
+
+  prChip(pr, t, id) {
+    if (!pr) return null;
+    const c = pr.state === "MERGED" ? t.ansi5 ?? t.accent : pr.state === "CLOSED" ? t.dim : pr.isDraft ? t.muted : t.ansi2;
+    return this.chip(`PR #${pr.number} ${pr.state === "OPEN" ? (pr.isDraft ? "draft" : "open") : pr.state.toLowerCase()}`, c, t, { url: pr.url, id });
+  }
+
+  section(title, t, right) {
+    return h_flex().px(14).pt(14).pb(6).items_center().gap(6)
+      .child(div().text_size(10.5).font_semibold().text_color(t.dim).child(title.toUpperCase()))
+      .child(div().flex_1()).when(Boolean(right), (e) => e.child(right));
+  }
+
+  scroller(id, body, t) {
+    return div().flex_1().min_h(0).relative()
+      .child(v_flex().id(id).absolute().inset_0().overflow_y_scroll().child(body))
+      .child(Scrollbar.vertical(id).absolute().inset_0());
+  }
+
+  /** The pipeline as one strip of cells: each verification stage, coloured by its last result. */
+  strip(stages, results, t, h = 6) {
+    const by = new Map((results ?? []).map((s) => [s.name, s]));
+    return h_flex().gap(2).h(h).flex_1().min_w(0).children(stages.map((name) => {
+      const r = by.get(name);
+      const state = !r ? "none" : r.state ?? (r.skipped ? "skipped" : r.pass ? "pass" : "fail");
+      const c = state === "none" ? t.border : statusColor(t, state);
+      return div().flex_1().h_full().rounded(2).bg(c).when(state === "running", (e) => e.opacity(0.6));
+    }));
+  }
+
+  agentPicker(t, idp) {
+    const list = this.agentList.length ? this.agentList : [{ key: "claude", name: "Claude Code" }];
+    const cur = H.agentChoice();
+    return h_flex().h(26).p(2).gap(2).rounded(7).bg(t.raised).border_1().border_color(t.border).children(list.map((a) =>
+      h_flex().id(`${idp}-ag-${a.key}`).h_full().px(8).items_center().rounded(5).cursor_pointer().text_size(11)
+        .bg(a.key === cur ? t.background : CLEAR).text_color(a.key === cur ? t.foreground : t.muted)
+        .when(a.key === cur, (e) => e.border_1().border_color(t.border))
+        .hover((s) => s.text_color(t.foreground)).tooltip(`New slots start ${a.name} (${a.run?.join(" ") ?? a.key})`)
+        .on_click((_e, cx) => { cx.stop_propagation(); H.setAgentChoice(a.key); cx.notify(); })
+        .child(a.key)));
+  }
+
+  // ---- views -----------------------------------------------------------------
+  render(cx) {
+    const t = theme();
+    if (this.view === "status") return this.renderStatus(t, cx);
+    if (this.view === "detail") return this.renderDetail(t, cx);
+    if (this.view === "free") return this.renderFree(t, cx);
+    if (this.view === "settings") return this.renderSettings(t, cx);
+    // the poller follows repo switches and refresh requests
+    if (!checking() && (H.tick() !== this.loadedTick || H.currentRepo() !== this.loadedRepo)) this.refresh(cx);
+    return this.renderTree(t, cx);
+  }
+
+  // ---- sidebar: project tree ------------------------------------------------------
+  renderTree(t, cx) {
+    const mine = H.repos(), cur = H.currentRepo(), sel = H.currentSlot();
+    const q = (this.query ?? "").trim().toLowerCase();
+    const compact = H.setting("slotView") === "compact";
+    const showFree = H.setting("showFree");
+
+    const groups = mine.map((r) => {
+      const snap = H.snapshot(r);
+      const repoHit = !q || r.toLowerCase().includes(q);
+      const slots = (snap?.slots ?? []).filter((s) => !q ? true : repoHit ? true : s.active && H.slotHaystack(snap, s).includes(q));
+      return { r, snap, slots, show: !q || repoHit || slots.length > 0 };
+    }).filter((g) => g.show);
+    const others = q ? (this.found ?? []).filter((r) => !mine.includes(r) && r.toLowerCase().includes(q)) : [];
+
+    const iconBtn = (id, icon, tip, on, active) => div().id(id).size(24).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+      .bg(active ? t.selected : CLEAR).hover((s) => s.bg(t.hover)).tooltip(tip)
+      .on_click((_e, cx) => { cx.stop_propagation(); on(cx); cx.notify(); }).child(this.icon(icon, active ? t.foreground : t.dim, 13));
+
+    const header = v_flex().flex_none().px(10).pt(10).pb(8).gap(8).border_b(1).border_color(t.border)
+      .child(h_flex().items_center().gap(4)
+        .child(this.icon("har", t.accent, 15))
+        .child(div().pl(3).font_semibold().text_size(13).child("HAR"))
+        .child(div().text_size(10.5).text_color(t.dim).child(H.agentChoice()))
+        .child(div().flex_1())
+        .child(this.busy?.has(H.currentRepo()) ? div().px(4).text_size(12).text_color(t.dim).frames(SPIN, 90) : div())
+        .child(iconBtn("tv-toggle", compact ? "rows" : "list", compact ? "Detailed slots" : "Compact slots",
+          () => H.setSetting("slotView", compact ? "detailed" : "compact"), false))
+        .child(iconBtn("tv-settings", "settings", "Settings", () => openOverlay({ mod: "har", kind: "popup", width: 280, height: 300, props: { view: "settings" } }), false))
+        .child(iconBtn("tv-add", "plus", "Add a project folder", (cx) => cx.spawn(async (cx) => { this.addRepo(await pickFolder({ prompt: "Add harness" })); cx.notify(); }), false)))
+      .when(Boolean(this.search), (e) => e.child(Input.new(this.search).h(28).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(12).text_color(t.foreground)));
+
+    const body = v_flex().px(6).py(6).gap(2)
+      .children(groups.flatMap((g) => this.projectGroup(g, cur, sel, compact, showFree, q, t)))
+      .when(Boolean(q) && !groups.length && !others.length, (e) => e.child(div().px(8).py(6).text_size(11.5).text_color(t.dim)
+        .child(this.found ? "Nothing matches." : "Searching this machine…")))
+      .when(others.length > 0, (e) => e.child(div().px(8).pt(10).pb(4).text_size(10).font_semibold().text_color(t.dim).child("OTHER HARNESSES ON THIS MACHINE"))
+        .children(others.slice(0, 40).map((r) => h_flex().id(`found-${r}`).py(5).px(8).gap(8).items_center().rounded(7).cursor_pointer()
+          .hover((e) => e.bg(t.hover)).tooltip(`Add ${H.tilde(r)}`)
+          .on_click((_e, cx) => { this.addRepo(r); this.refresh(cx, r); cx.notify(); })
+          .child(this.icon("plus", t.accent, 11))
+          .child(v_flex().flex_1().min_w(0)
+            .child(div().truncate().text_size(12).child(H.base(r)))
+            .child(div().truncate().text_size(10).text_color(t.dim).child(H.tilde(r).replace(/\/[^/]+$/, "")))))));
+
+    return v_flex().id("har-tree").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.5)
+      .child(header).child(this.scroller("har-tree-list", body, t));
+  }
+
+  projectGroup({ r, snap, slots }, cur, sel, compact, showFree, q, t) {
+    const open = q ? true : H.expanded(r);
+    const isCur = r === cur;
+    const all = snap?.slots ?? [];
+    const active = all.filter((s) => s.active);
+    const dirs = active.map((s) => s.workDir);
+    const ag = H.slotAgentsIn(dirs);
+    const fail = active.filter((s) => s.lastVerify === "fail").length;
+    const dotc = !snap ? t.border : snap.error ? t.ansi1 : ag.some((a) => a.status === "blocked") ? t.blocked
+      : ag.some((a) => a.status === "working") ? t.working : fail ? t.ansi1 : active.length ? t.accent : t.dim;
+    const head = h_flex().id(`pg-${r}`).px(6).h(28).gap(6).items_center().rounded(7).cursor_pointer()
+      .bg(isCur && sel == null ? t.selected : CLEAR).hover((e) => e.bg(isCur && sel == null ? t.selected : t.hover)).tooltip(H.tilde(r))
+      .on_click(() => { H.selectRepo(r); if (!H.expanded(r)) H.toggleExpanded(r); })
+      .child(div().id(`pg-chev-${r}`).size(16).flex_none().flex().items_center().justify_center().cursor_pointer()
+        .on_click((_e, cx) => { cx.stop_propagation(); H.toggleExpanded(r); cx.notify(); })
+        .child(this.icon(open ? "chevron-down" : "chevron-right", t.dim, 12)))
+      .child(ag.some((a) => a.status === "working") ? this.pulse(dotc, 7) : this.dot(dotc, 7))
+      .child(h_flex().flex_1().min_w(0).gap(6).items_center()
+        .child(div().flex_none().text_size(12.5).font_semibold().text_color(isCur ? t.foreground : t.muted).child(H.base(r)))
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(H.tilde(r).replace(/\/[^/]+$/, ""))))
+      .child(div().flex_none().text_size(10.5).text_color(active.length ? t.muted : t.dim).child(snap ? `${active.length}/${all.length}` : ""))
+      .child(div().id(`pg-new-${r}`).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+        .hover((s) => s.bg(t.hover)).tooltip(`New discussion in ${H.base(r)} (${H.agentChoice()})`)
+        .on_click((_e, cx) => { cx.stop_propagation(); H.selectRepo(r); this.newDiscussion(r, cx); })
+        .child(this.icon("plus", t.muted, 13)));
+    if (!open) return [head];
+    if (!snap) return [head, div().pl(30).py(3).text_size(11).text_color(t.dim).child("reading…")];
+    const shown = slots.filter((s) => s.active);
+    const free = all.filter((s) => !s.active);
+    const rows = shown.map((s) => compact ? this.slotRow(r, snap, s, isCur && s.id === sel, t) : div().pl(14).child(this.slotCard(r, snap, s, isCur && s.id === sel, t)));
+    if (showFree && !q && free.length) {
+      rows.push(compact
+        ? h_flex().id(`pg-free-${r}`).pl(30).pr(6).h(24).gap(6).items_center().rounded(6).cursor_pointer().hover((e) => e.bg(t.hover))
+            .tooltip(`Launch slot ${free[0].id} and start ${H.agentChoice()}`).on_click(() => { H.selectRepo(r); this.launchWithAgent(r, free[0].id); })
+            .child(this.dot(t.border, 6)).child(div().text_size(11).text_color(t.dim).child(`${free.length} free · ${free.map((s) => `#${s.id}`).join(" ")}`))
+            .child(div().flex_1()).child(this.icon("play", t.dim, 11))
+        : div().pl(14).children(free.map((s) => this.slotCard(r, snap, s, false, t))));
+    }
+    if (snap.error) rows.unshift(div().pl(30).text_size(10.5).text_color(t.ansi1).truncate().child(snap.error));
+    return [head, v_flex().gap(compact ? 0 : 6).pb(4).children(rows)];
+  }
+
+  /** Minimised slot: one line — status, #id, work unit, PR/push/dirty marks, verify, cost. */
+  slotRow(repo, snap, s, selected, t) {
+    const f = H.slotFacts(snap, s);
+    const aState = H.worst(f.agents);
+    const vt = H.verifyTerminal(repo, s.id);
+    const lv = H.live();
+    const running = Boolean(vt && lv && lv.repo === repo && lv.slot === s.id && lv.running);
+    const last = H.lastVerify(snap, s);
+    const color = aState ? statusColor(t, aState) : t.accent;
+    const vColor = running ? t.working : last ? statusColor(t, last.status) : t.dim;
+    return h_flex().id(`sr-${repo}-${s.id}`).pl(30).pr(6).h(26).gap(6).items_center().rounded(6).cursor_pointer()
+      .bg(selected ? t.selected : CLEAR).hover((e) => e.bg(selected ? t.selected : t.hover))
+      .tooltip([s.work, f.pr && `PR #${f.pr.number} ${f.pr.state.toLowerCase()}`, s.branch, f.reasons.join(" · ")].filter(Boolean).join("\n"))
+      .on_click(() => { H.selectRepo(repo); H.selectSlot(s.id); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); })
+      .child(aState === "working" ? this.pulse(color, 7) : this.dot(color, 7))
+      .child(div().w(18).flex_none().text_size(11).text_color(t.muted).child(`#${s.id}`))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(selected ? t.foreground : t.muted)
+        .child(s.work ?? (f.agents[0]?.title || (s.branch ?? "").replace(/^.*-har-agent-/, "agent-"))))
+      .when(aState === "blocked", (e) => e.child(div().text_size(10).text_color(t.blocked).child("needs you")))
+      .when(Boolean(f.pr), (e) => e.child(div().text_size(10).text_color(f.pr.state === "MERGED" ? t.ansi5 ?? t.accent : f.pr.state === "OPEN" ? t.ansi2 : t.dim).child(`#${f.pr.number}`)))
+      .when(f.unpushed > 0, (e) => e.child(div().text_size(10).text_color(t.blocked).tooltip(`${f.unpushed} unpushed`).child(`↑${f.unpushed}`)))
+      .when(f.dirty, (e) => e.child(div().text_size(10).text_color(t.blocked).child("●")))
+      .when(Boolean(s.stale), (e) => e.child(div().text_size(10).text_color(t.blocked).child("stale")))
+      .child(running ? div().w(10).text_size(10.5).text_color(t.working).frames(SPIN, 90)
+        : last ? this.icon(last.status === "pass" ? "check" : "fail", vColor, 11) : div().w(11));
+  }
+
+  slotCard(repo, snap, s, selected, t) {
+    const vt = H.verifyTerminal(repo, s.id);
+    const last = H.lastVerify(snap, s);
+    const lv = H.live();
+    const live = vt && lv && lv.repo === repo && lv.slot === s.id && lv.terminal === vt.terminal ? lv : null;
+    const card = v_flex().id(`slot-${s.id}`).p(9).gap(5).rounded(8).cursor_pointer()
+      .bg(selected ? t.selected : t.surface).border_1().border_color(selected ? t.accent : t.border)
+      .hover((e) => e.border_color(t.input))
+      .on_click(() => { H.selectSlot(s.id); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); });
+
+    if (!s.active) {
+      return card.child(h_flex().items_center().gap(7)
+        .child(this.dot(t.border))
+        .child(div().text_color(t.muted).child(`Slot ${s.id}`))
+        .child(div().text_size(11).text_color(t.dim).child("free"))
+        .child(div().flex_1())
+        .child(this.button(`launch-${s.id}`, `Launch · ${H.agentChoice()}`, t, () => this.launchWithAgent(repo, s.id), { icon: "play" })
+          .tooltip(`har env launch ${s.id}, then ${this.agent().run?.join(" ") ?? H.agentChoice()} in the new worktree`)));
+    }
+
+    const f = H.slotFacts(snap, s);
+    const aState = H.worst(f.agents);
+    const color = aState ? statusColor(t, aState) : t.accent;
+    return card
+      .child(h_flex().items_center().gap(7)
+        .child(aState === "working" ? this.pulse(color) : this.dot(color))
+        .child(div().font_semibold().child(`Slot ${s.id}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(s.work ?? ""))
+        .when(f.agents.length > 0, (e) => e.child(div().text_size(10.5).text_color(color).child(aState === "blocked" ? "needs you" : `${f.agents.length} agent${f.agents.length > 1 ? "s" : ""}`))))
+      .child(h_flex().items_center().gap(5).text_size(11).text_color(t.dim)
+        .child(this.icon("branch", t.dim, 11))
+        .child(div().flex_1().min_w(0).truncate().child(s.branch ?? "—"))
+        .when(s.ahead != null, (e) => e.child(div().child(`↑${s.ahead} ↓${s.behind}`)))
+        .when(f.dirty, (e) => e.child(div().text_color(t.blocked).tooltip("Uncommitted changes").child("●")))
+        .when(Boolean(s.stale), (e) => e.child(this.chip("stale", t.blocked, t))))
+      .child(h_flex().items_center().gap(5).flex_wrap()
+        .when(Boolean(f.pr), (e) => e.child(this.prChip(f.pr, t, `pr-${s.id}`)))
+        .when(f.unpushed > 0, (e) => e.child(this.chip(`${f.unpushed} unpushed`, t.blocked, t)))
+        .when(!f.pr && f.pushed && !f.unpushed, (e) => e.child(this.chip("pushed", t.muted, t)))
+        .child(div().flex_1())
+        .when(f.usage.sessions > 0, (e) => e.child(div().text_size(10.5).text_color(t.muted).tooltip(`${H.tokens(f.usage.tokens)} tokens · ${f.usage.sessions} session${f.usage.sessions > 1 ? "s" : ""}`)
+          .child(`${H.money(f.usage.cost)} · ${H.tokens(f.usage.tokens)}`))))
+      .child(h_flex().items_center().gap(7)
+        .child(this.strip(snap.stages, live ? live.stages : last?.stages, t))
+        .child(live?.running ? div().text_size(10.5).text_color(t.working).frames(SPIN, 90) : div())
+        .child(div().flex_none().text_size(10.5).text_color(live?.running ? t.working : last ? statusColor(t, last.status) : t.dim)
+          .child(live?.running ? "verifying" : last ? `${last.status} · ${H.ago(last.at)}` : "not verified")));
+  }
+
+  // ---- popup: settings -------------------------------------------------------------
+  renderSettings(t, cx) {
+    const p = props() ?? {};
+    const seg = (id, options, value, set) => h_flex().h(26).p(2).gap(2).rounded(7).bg(t.raised).border_1().border_color(t.border).children(options.map(([k, label]) =>
+      h_flex().id(`${id}-${k}`).h_full().px(8).items_center().rounded(5).cursor_pointer().text_size(11)
+        .bg(k === value ? t.background : CLEAR).text_color(k === value ? t.foreground : t.muted)
+        .when(k === value, (e) => e.border_1().border_color(t.border))
+        .on_click((_e, cx) => { set(k); cx.notify(); }).child(label)));
+    const row = (label, hint, control) => v_flex().gap(5).child(h_flex().items_center().child(div().flex_1().text_size(12).child(label)).child(control))
+      .when(Boolean(hint), (e) => e.child(div().text_size(10.5).text_color(t.dim).child(hint)));
+    const agents = (this.agentList.length ? this.agentList : [{ key: "claude", name: "Claude Code" }]);
+    const cur = this.agentList.find((a) => a.key === H.agentChoice());
+    return v_flex().id("har-settings").size_full().p(14).gap(14).bg(t.popover).text_color(t.foreground).text_size(12)
+      .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(13).child("HAR panel")).child(div().text_size(10.5).text_color(t.dim).child("Esc")))
+      .child(row("Slot view", "Compact: one line per slot. Detailed: cards with branch, PR, cost and pipeline.",
+        seg("sv", [["compact", "Compact"], ["detailed", "Detailed"]], H.setting("slotView"), (k) => H.setSetting("slotView", k))))
+      .child(row("Agent CLI", cur ? `New slots run: ${cur.run.join(" ")}` : "Installed coding agents found by herdr.",
+        seg("ag", agents.map((a) => [a.key, a.key]), H.agentChoice(), (k) => H.setAgentChoice(k))))
+      .child(row("Free slots", "Show free slots under each project.",
+        seg("sf", [["on", "Show"], ["off", "Hide"]], H.setting("showFree") ? "on" : "off", (k) => H.setSetting("showFree", k === "on"))))
+      .child(div().flex_1())
+      .child(h_flex().justify_end().child(this.button("set-done", "Done", t, () => closeOverlay(p.overlay), { primary: true })));
+  }
+
+  // ---- dialog: free a slot -------------------------------------------------------
+  renderFree(t, cx) {
+    const p = props() ?? {};
+    const repo = p.repo, snap = H.snapshot(repo);
+    const rows = (snap?.slots ?? []).map((s) => ({ s, f: H.slotFacts(snap, s) }))
+      .sort((a, b) => rank(a.f.verdict) - rank(b.f.verdict) || a.s.id - b.s.id);
+    const picked = rows.find((x) => x.s.id === this.pick) ?? null;
+    const close = () => closeOverlay(p.overlay);
+    const go = () => {
+      if (!picked) return;
+      if (picked.f.verdict === "keep" && !this.armed) { this.armed = true; return; }
+      close();
+      this.launchWithAgent(repo, picked.s.id, picked.s.active ? this.freeMode : "", H.agentChoice(), this.agentList);
+    };
+
+    const slotRow = ({ s, f }) => {
+      const on = s.id === this.pick, vc = verdictColor(t, f.verdict);
+      const last = H.lastVerify(snap, s);
+      const aState = H.worst(f.agents);
+      return v_flex().id(`fr-${s.id}`).p(10).gap(5).rounded(8).cursor_pointer()
+        .bg(on ? t.selected : t.surface).border_1().border_color(on ? t.accent : t.border).hover((e) => e.border_color(t.input))
+        .on_click((_e, cx) => { this.pick = s.id; this.armed = false; cx.notify(); })
+        .child(h_flex().items_center().gap(8)
+          .child(div().size(14).flex_none().rounded(7).border_1().border_color(on ? t.accent : t.input)
+            .child(on ? div().size(8).m(2).rounded(4).bg(t.accent) : div()))
+          .child(div().font_semibold().child(`Slot ${s.id}`))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(s.work ?? (s.active ? "no work unit" : "")))
+          .child(this.chip(VERDICT[f.verdict], vc, t)))
+        .when(s.active, (e) => e
+          .child(div().pl(22).text_size(11.5).text_color(vc).child(f.reasons.join(" · ")))
+          .child(h_flex().pl(22).gap(6).items_center().flex_wrap().text_size(11).text_color(t.dim)
+            .child(this.icon("branch", t.dim, 11)).child(div().max_w(260).truncate().child(s.branch ?? "—"))
+            .when(s.ahead != null, (e) => e.child(div().child(`↑${s.ahead} ↓${s.behind}`)))
+            .when(Boolean(f.pr), (e) => e.child(this.prChip(f.pr, t, `fpr-${s.id}`)))
+            .child(this.chip(f.unpushed > 0 ? `${f.unpushed} unpushed` : f.pushed ? "pushed" : (s.ahead ?? 0) > 0 ? "not pushed" : "nothing to push",
+              f.unpushed > 0 ? t.blocked : t.muted, t))
+            .child(this.chip(f.dirty ? `${f.git?.changed ?? ""} uncommitted`.trim() : "clean", f.dirty ? t.blocked : t.muted, t))
+            .when(Boolean(s.stale), (e) => e.child(this.chip(`stale · ${s.behind} behind`, t.blocked, t))))
+          .child(h_flex().pl(22).gap(12).items_center().text_size(11).text_color(t.dim)
+            .child(div().text_color(last ? statusColor(t, last.status) : t.dim).child(last ? `verify ${last.status}${last.full ? " --full" : ""} · ${H.ago(last.at)}` : "never verified"))
+            .child(div().text_color(aState ? statusColor(t, aState) : t.dim).child(f.agents.length ? `${f.agents.length} agent${f.agents.length > 1 ? "s" : ""} ${aState}` : "no agent open"))
+            .when(f.usage.sessions > 0, (e) => e.child(div().child(`${H.money(f.usage.cost)} · ${H.tokens(f.usage.tokens)} tok`)))
+            .when(Boolean(s.since), (e) => e.child(div().child(`started ${H.ago(s.since)}`))))
+          .when(Boolean(f.git?.subject), (e) => e.child(div().pl(22).truncate().text_size(11).text_color(t.muted).child(`last commit: ${f.git.subject}`))));
+    };
+
+    const mode = (key, label, hint) => h_flex().id(`fm-${key}`).flex_1().p(8).gap(8).items_start().rounded(7).cursor_pointer()
+      .border_1().border_color(this.freeMode === key ? t.accent : t.border).bg(this.freeMode === key ? t.selected : CLEAR)
+      .on_click((_e, cx) => { this.freeMode = key; cx.notify(); })
+      .child(div().mt(2).size(12).flex_none().rounded(6).border_1().border_color(this.freeMode === key ? t.accent : t.input)
+        .child(this.freeMode === key ? div().size(6).m(2).rounded(3).bg(t.accent) : div()))
+      .child(v_flex().gap(2).child(div().text_size(12).child(label)).child(div().text_size(10.5).text_color(t.dim).child(hint)));
+
+    const keep = picked?.f.verdict === "keep";
+    const label = !picked ? "Pick a slot" : !picked.s.active ? `Launch slot ${picked.s.id} & start ${this.agent().name}`
+      : this.armed ? `Really free slot ${picked.s.id}?` : `Free slot ${picked.s.id} & start ${this.agent().name}`;
+    const anyFree = rows.some((x) => !x.s.active);
+
+    return v_flex().id("har-free").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_color(t.foreground).text_size(12.5)
+      .on_key_down((e, cx) => { if (e.key === "escape") { close(); cx.stop_propagation(); } else if (e.key === "enter") { go(); cx.notify(); cx.stop_propagation(); } })
+      .child(v_flex().flex_none().px(18).pt(16).pb(10).gap(4)
+        .child(h_flex().items_center().gap(8)
+          .child(div().flex_1().text_size(15).font_semibold().child(anyFree ? `New discussion · ${H.base(repo)}` : `All ${rows.length} slots of ${H.base(repo)} are taken`))
+          .child(div().text_size(11).text_color(t.dim).child("Esc")))
+        .child(div().text_size(11.5).text_color(t.muted).child(anyFree ? "Pick a free slot, or one to free. Slots are ranked from safest to free: merged or empty work first, unpushed or uncommitted work last."
+          : "Pick the slot to free for the new discussion. Slots are ranked from safest to free: merged or empty work first, unpushed or uncommitted work last.")))
+      .child(this.scroller("har-free-list", v_flex().px(18).pb(8).gap(6).children(rows.map(slotRow)), t))
+      .child(v_flex().flex_none().px(18).pt(10).pb(16).gap(10).border_t(1).border_color(t.border)
+        .when(Boolean(picked?.s.active), (e) => e.child(h_flex().gap(8)
+          .child(mode("teardown", "Teardown", "Stops the slot, keeps the branch. Always works."))
+          .child(mode("complete", "Complete", "Closes the work attempt; needs a passing verify --full."))))
+        .when(keep, (e) => e.child(div().text_size(11.5).text_color(t.ansi1).child(`⚠ Slot ${picked.s.id}: ${picked.f.reasons.join(", ")}. The branch is kept, but an agent still running there loses its session.`)))
+        .child(h_flex().items_center().gap(8)
+          .child(div().text_size(11.5).text_color(t.dim).child("Agent")).child(this.agentPicker(t, "fr"))
+          .child(div().flex_1())
+          .child(this.button("fr-cancel", "Cancel", t, close, { h: 30 }))
+          .child(this.button("fr-go", label, t, (cx) => { go(); cx.notify(); }, { primary: true, danger: keep, icon: "play", h: 30 }))));
+  }
+
+  // ---- right panel ---------------------------------------------------------------
+  renderDetail(t, cx) {
+    const repo = H.currentRepo(), snap = repo ? H.snapshot(repo) : null, id = H.currentSlot();
+    const slot = snap?.slots.find((s) => s.id === id) ?? null;
+    const shell = (children) => v_flex().id("har-detail").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)
+      .border_1().border_color(t.border).text_color(t.foreground).text_size(12.5)
+      .child(this.scroller("har-detail-scroll", v_flex().pb(14).children(children), t));
+    if (!snap) return shell([div().p(14).text_color(t.dim).child("Waiting for HAR data…")]);
+    if (!slot) return shell(this.overview(repo, snap, t, cx));
+    return shell(this.slotDetail(repo, snap, slot, t, cx));
+  }
+
+  usageBlock(u, t, opts = {}) {
+    if (!u || u.sessions === 0) return div().px(14).text_size(11.5).text_color(t.dim).child(opts.empty ?? "No OTel usage recorded yet.");
+    const models = Object.entries(u.models).sort((a, b) => b[1].cost - a[1].cost || b[1].tokens - a[1].tokens).slice(0, 4);
+    const stat = (label, value, color) => v_flex().gap(1).child(div().text_size(10).text_color(t.dim).child(label)).child(div().text_size(12.5).text_color(color ?? t.foreground).child(value));
+    return v_flex().px(14).gap(8)
+      .child(h_flex().gap(14).items_end().flex_wrap()
+        .child(v_flex().gap(1).child(div().text_size(10).text_color(t.dim).child(opts.label ?? "Cost"))
+          .child(div().text_size(20).font_semibold().child(u.unpriced && !u.cost ? "unpriced" : H.money(u.cost))))
+        .child(stat("Tokens", H.tokens(u.tokens)))
+        .child(stat("In / out", `${H.tokens(u.input)} / ${H.tokens(u.output)}`))
+        .child(stat("Cache", H.tokens(u.cacheRead), t.muted))
+        .child(stat("Sessions", String(u.sessions), t.muted)))
+      .child(v_flex().gap(3).children(models.map(([m, v]) => h_flex().gap(8).items_center().text_size(11)
+        .child(div().w(130).flex_none().truncate().text_color(t.muted).child(m))
+        .child(div().flex_1().h(5).rounded(3).bg(t.raised).child(div().h_full().rounded(3).bg(t.accent + "aa").w(`${Math.max(2, Math.round((u.cost ? v.cost / u.cost : v.tokens / Math.max(1, u.tokens)) * 100))}%`)))
+        .child(div().w(54).text_right().text_color(t.dim).child(H.money(v.cost)))
+        .child(div().w(44).text_right().text_color(t.dim).child(H.tokens(v.tokens))))));
+  }
+
+  overview(repo, snap, t, cx) {
+    const active = snap.slots.filter((s) => s.active);
+    const ru = H.repoUsage(snap);
+    const out = [
+      h_flex().h(44).px(14).items_center().gap(8).border_b(1).border_color(t.border)
+        .child(this.icon("har", t.accent, 15)).child(div().font_semibold().child(H.base(repo)))
+        .child(this.chip(snap.profile ?? "?", t.muted, t)).child(div().flex_1())
+        .child(this.button("mc", "Mission Control", t, () => H.openMissionControl(repo, null), { icon: "external" })),
+      div().px(14).pt(10).text_size(11.5).text_color(t.dim).child(`${H.tilde(repo)} · ${active.length}/${snap.slots.length} slots in use`),
+    ];
+
+    // usage
+    out.push(this.section("Usage · OTel", t, snap.usage?.error ? div().text_size(10.5).text_color(t.blocked).child(snap.usage.error) : null));
+    if (!snap.usage?.error) {
+      out.push(this.usageBlock(ru.all, t, { label: "Repository total" }));
+      const perSlot = active.map((s) => ({ s, u: H.slotUsage(snap, s) }));
+      const max = Math.max(0.0001, ...perSlot.map((x) => x.u.cost), ru.unattributed.cost);
+      out.push(v_flex().px(14).pt(10).gap(3)
+        .children(perSlot.map(({ s, u }) => h_flex().id(`us-${s.id}`).gap(8).items_center().text_size(11).cursor_pointer().on_click(() => H.selectSlot(s.id))
+          .child(div().w(46).flex_none().text_color(t.muted).child(`Slot ${s.id}`))
+          .child(div().flex_1().h(6).rounded(3).bg(t.raised).child(div().h_full().rounded(3).bg(t.working + "bb").w(`${u.cost ? Math.max(2, Math.round((u.cost / max) * 100)) : 0}%`)))
+          .child(div().w(54).text_right().text_color(u.sessions ? t.foreground : t.dim).child(u.sessions ? H.money(u.cost) : "—"))
+          .child(div().w(44).text_right().text_color(t.dim).child(u.sessions ? H.tokens(u.tokens) : ""))))
+        .child(h_flex().gap(8).items_center().text_size(11).tooltip("Sessions in this repo that no slot could be matched to (e.g. run in the main checkout)")
+          .child(div().w(46).flex_none().text_color(t.dim).child("Other"))
+          .child(div().flex_1().h(6).rounded(3).bg(t.raised).child(div().h_full().rounded(3).bg(t.dim).w(`${ru.unattributed.cost ? Math.max(2, Math.round((ru.unattributed.cost / max) * 100)) : 0}%`)))
+          .child(div().w(54).text_right().text_color(t.muted).child(H.money(ru.unattributed.cost)))
+          .child(div().w(44).text_right().text_color(t.dim).child(H.tokens(ru.unattributed.tokens)))));
+    }
+
+    // pipeline health: the last verify runs as a stage × run grid
+    const verifies = snap.runs.filter((r) => r.kind === "verify" && r.stages).slice(0, 16).reverse();
+    const names = [...snap.stages, ...new Set(verifies.flatMap((r) => r.stages.map((x) => x.name)).filter((n) => !snap.stages.includes(n)))];
+    const passN = verifies.filter((r) => r.status === "pass").length;
+    out.push(this.section("Pipeline health", t, verifies.length ? div().text_size(10.5).text_color(passN / verifies.length >= 0.8 ? t.ansi2 : t.blocked)
+      .child(`${Math.round((passN / verifies.length) * 100)}% of last ${verifies.length} verifies pass`) : null));
+    if (!verifies.length) out.push(div().px(14).text_size(11.5).text_color(t.dim).child("No verify runs recorded."));
+    else out.push(v_flex().px(14).gap(2).children(names.map((name) => {
+      const cells = verifies.map((r) => r.stages.find((x) => x.name === name) ?? null);
+      const ran = cells.filter(Boolean).filter((c) => !c.skipped);
+      const fails = ran.filter((c) => !c.pass).length;
+      const flaky = fails > 0 && fails < ran.length;
+      const ms = ran.map((c) => c.ms).filter((x) => x != null).sort((a, b) => a - b);
+      const med = ms.length ? ms[Math.floor(ms.length / 2)] : null;
+      const rate = ran.length ? Math.round(((ran.length - fails) / ran.length) * 100) : null;
+      return h_flex().h(18).gap(8).items_center()
+        .child(div().w(96).flex_none().truncate().text_size(11.5).text_color(fails ? t.foreground : t.muted).child(name))
+        .child(h_flex().flex_1().min_w(0).h(10).gap(2).gap(1).children(cells.map((c, i) => div().w(3).flex_none().h_full().rounded(1)
+          .bg(!c ? t.raised : c.skipped ? t.border : c.pass ? t.ansi2 + "cc" : t.ansi1))))
+        .child(div().w(40).flex_none().text_right().text_size(10.5).text_color(rate == null ? t.dim : rate === 100 ? t.muted : rate >= 80 ? t.blocked : t.ansi1).child(rate == null ? "—" : `${rate}%`))
+        .child(div().w(40).text_right().text_size(10.5).text_color(t.dim).child(med != null ? H.dur(med) : ""))
+        .child(div().w(34).text_size(10).text_color(t.blocked).child(flaky ? "flaky" : ""));
+    })).child(h_flex().pt(4).text_size(10).text_color(t.dim).child(div().flex_1().child(`← oldest · newest →`)).child(div().child("pass rate · median"))));
+
+    // factory lines
+    if (snap.lines?.length) {
+      out.push(this.section(`Factory lines · ${snap.lines.length}`, t));
+      out.push(v_flex().px(14).gap(10).children(snap.lines.map((l) => {
+        const st = l.stations ?? [];
+        const next = st.find((s) => !s.green);
+        const green = st.filter((s) => s.green).length;
+        return v_flex().gap(5)
+          .child(h_flex().gap(6).items_center()
+            .child(div().font_semibold().text_size(12).child(l.title ?? l.lineId))
+            .child(div().flex_1())
+            .child(div().text_size(10.5).text_color(green === st.length ? t.ansi2 : t.dim).child(`${green}/${st.length} stations`)))
+          .child(h_flex().gap(3).children(st.map((s) => {
+            const failed = (s.requiredStageIds ?? []).filter((x) => !(s.passedStageIds ?? []).includes(x) && !(s.neverRunStageIds ?? []).includes(x) && !(s.missingStageIds ?? []).includes(x));
+            const c = s.green ? t.ansi2 : failed.length ? t.ansi1 : (s.missingStageIds ?? []).length ? t.blocked : t.dim;
+            return h_flex().id(`st-${l.lineId}-${s.id}`).flex_1().h(20).items_center().justify_center().rounded(4)
+              .bg(s.green ? t.ansi2 + "33" : CLEAR).border_1().border_color(c + (s === next ? "" : "66"))
+              .text_size(10.5).text_color(c).tooltip(`${s.id} · ${s.title}${s.green ? " — green" : failed.length ? ` — failing: ${failed.join(", ")}` : " — not run yet"}`)
+              .child(s.id);
+          })))
+          .when(Boolean(next), (e) => e.child(div().truncate().text_size(11).text_color(t.muted).child(`next: ${next.id} · ${next.title}`)));
+      })));
+    }
+
+    // work units
+    const units = snap.workUnits ?? [];
+    out.push(this.section(`Work units · ${units.length}`, t));
+    if (!units.length) out.push(div().px(14).text_size(11.5).text_color(t.dim).child("No work units bound yet (har env launch --work-id …)."));
+    out.push(v_flex().px(8).gap(1).children(units.slice(0, 30).map((w) => {
+      const inSlot = active.find((s) => s.work === w.id);
+      const u = H.workUsage(snap, w.id);
+      return h_flex().id(`wu-${w.id}`).h(36).px(6).gap(8).items_center().rounded(6).hover((e) => e.bg(t.hover))
+        .when(Boolean(inSlot), (e) => e.cursor_pointer().on_click(() => H.selectSlot(inSlot.id)))
+        .when(Boolean(w.url), (e) => e.tooltip(w.url))
+        .child(inSlot ? this.dot(t.accent, 7) : this.dot(t.border, 7))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_size(12).child(w.id))
+          .child(div().truncate().text_size(10.5).text_color(t.dim).child(w.title ?? "")))
+        .child(inSlot ? this.chip(`slot ${inSlot.id}`, t.accent, t) : div().text_size(10.5).text_color(t.dim).child(`${w.attempts.length} attempt${w.attempts.length === 1 ? "" : "s"}`))
+        .child(div().w(50).text_right().text_size(11).text_color(u.sessions ? t.foreground : t.dim).child(u.sessions ? H.money(u.cost) : "—"))
+        .child(div().w(52).text_right().text_size(10.5).text_color(t.dim).child(H.ago(w.lastAt)));
+    })));
+    return out;
+  }
+
+  slotDetail(repo, snap, s, t, cx) {
+    const f = H.slotFacts(snap, s);
+    const agents = f.agents;
+    const vt = H.verifyTerminal(repo, s.id);
+    const live = vt && this.live?.terminal === vt.terminal ? this.live : null;
+    const last = H.lastVerify(snap, s);
+    const results = live ? live.stages : last?.stages?.map((x) => ({ ...x, state: x.skipped ? "skipped" : x.pass ? "pass" : "fail" })) ?? [];
+    const byName = new Map(results.map((r) => [r.name, r]));
+    const names = [...snap.stages, ...results.map((r) => r.name).filter((n) => !snap.stages.includes(n))];
+    const maxMs = Math.max(1, ...results.map((r) => r.ms ?? 0));
+    const runs = snap.runs.filter((r) => r.slot === s.id).slice(0, 6);
+    const entries = Object.entries(s.previews ?? {});
+    const unit = (snap.workUnits ?? []).find((w) => w.id === s.work);
+
+    const header = v_flex().px(14).pt(12).pb(10).gap(6).border_b(1).border_color(t.border)
+      .child(h_flex().items_center().gap(8)
+        .child(div().text_size(15).font_semibold().child(`Slot ${s.id}`))
+        .child(this.chip(s.active ? "active" : "free", s.active ? t.ansi2 : t.dim, t))
+        .when(Boolean(s.stale), (e) => e.child(this.chip(`stale · ${s.behind} behind`, t.blocked, t)))
+        .when(s.usage === "bypass_warning", (e) => e.child(this.chip("harness bypassed", t.blocked, t)))
+        .child(div().flex_1())
+        .child(div().id("close-detail").cursor_pointer().tooltip("Back to overview").on_click(() => H.selectSlot(null)).child(this.icon("x", t.dim, 13))))
+      .when(Boolean(s.work), (e) => e.child(v_flex().gap(1)
+        .child(h_flex().gap(6).items_center().text_size(12).child(div().text_color(t.dim).child("Work unit")).child(div().font_semibold().child(s.work)))
+        .when(Boolean(unit?.title), (e) => e.child(div().text_size(11.5).text_color(t.muted).child(unit.title)))))
+      .child(h_flex().gap(6).items_center().text_size(11.5).text_color(t.muted)
+        .child(this.icon("branch", t.dim, 12)).child(div().min_w(0).truncate().child(s.branch ?? "—"))
+        .when(Boolean(s.baseCommit), (e) => e.child(div().text_color(t.dim).child(`from ${s.baseBranch ?? "?"}@${s.baseCommit}`))))
+      .child(div().id("wd").text_size(11).text_color(t.dim).truncate().font_family(settings().font_family ?? "JetBrains Mono").tooltip(s.workDir ?? "").child(H.tilde(s.workDir)));
+
+    const actions = h_flex().px(14).py(10).gap(6).flex_wrap().border_b(1).border_color(t.border)
+      .child(this.button("v-full", "Verify --full", t, () => this.verify(repo, s, true), { primary: true, icon: "play" }))
+      .child(this.button("v-quick", "Verify", t, () => this.verify(repo, s, false), { icon: "check" }))
+      .child(this.button("space", H.slotSpace(s) ? "Go to space" : "Open space", t, () => this.openSpace(repo, s), { icon: "folder" }))
+      .child(this.button("agent", `Start ${H.agentChoice()}`, t, () => this.startAgent(repo, s), { icon: "terminal" }))
+      .when((snap.stageIds ?? []).includes("logs"), (e) => e.child(this.button("logs", "Logs", t, () => this.tab(`logs · ${H.base(repo)}#${s.id}`, ["har", "env", "logs", String(s.id), "--repo", repo], repo), { icon: "logs" })))
+      .child(this.button("mc", "Mission Control", t, () => H.openMissionControl(repo, s.id), { icon: "external" }))
+      .child(this.button("complete", "Complete…", t, () => this.confirm(`Complete slot ${s.id}?`,
+        `Runs har env complete ${s.id}: reuses the last passing full verify, tears the slot down and keeps branch ${s.branch ?? ""}.${f.unpushed ? ` ${f.unpushed} commit(s) are not pushed yet.` : ""}`,
+        `complete · ${H.base(repo)}#${s.id}`, ["har", "env", "complete", String(s.id), "--repo", repo], repo), { danger: true }))
+      .child(this.button("teardown", "Teardown…", t, () => this.confirm(`Tear down slot ${s.id}?`,
+        `Runs har env teardown ${s.id}: stops the slot's services and frees it without closing the work attempt.${f.dirty ? " The worktree has uncommitted changes." : ""}`,
+        `teardown · ${H.base(repo)}#${s.id}`, ["har", "env", "teardown", String(s.id), "--repo", repo], repo), { danger: true }));
+
+    // git & PR
+    const vc = verdictColor(t, f.verdict);
+    const gitBlock = v_flex().px(14).gap(6)
+      .child(h_flex().gap(6).items_center().flex_wrap()
+        .when(Boolean(f.pr), (e) => e.child(this.prChip(f.pr, t, "d-pr")))
+        .when(!f.pr, (e) => e.child(this.chip(snap.prs ? "no PR" : "PRs unknown (gh)", t.dim, t)))
+        .child(this.chip(`↑${s.ahead ?? "?"} ahead · ↓${s.behind ?? "?"} behind`, t.muted, t))
+        .child(this.chip(f.unpushed > 0 ? `${f.unpushed} unpushed` : f.pushed ? "pushed" : (s.ahead ?? 0) > 0 ? "not pushed" : "nothing to push", f.unpushed > 0 ? t.blocked : t.muted, t))
+        .child(this.chip(f.dirty ? `${f.git?.changed ?? ""} uncommitted`.trim() : "clean", f.dirty ? t.blocked : t.muted, t))
+        .when(Boolean(f.git?.merged && (s.ahead ?? 0) > 0), (e) => e.child(this.chip(`merged into ${s.baseBranch ?? "base"}`, t.ansi2, t))))
+      .when(Boolean(f.pr), (e) => e.child(div().truncate().text_size(11.5).text_color(t.muted).child(f.pr.title)))
+      .when(Boolean(f.git?.subject), (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(`last commit: ${f.git.subject}`)))
+      .when((f.git?.remotes ?? []).length > 0, (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(`on ${f.git.remotes.join(", ")}`)))
+      .child(h_flex().gap(6).items_center().text_size(11).child(this.chip(VERDICT[f.verdict], vc, t)).child(div().text_color(vc).child(f.reasons.join(" · "))));
+
+    const previews = entries.length ? h_flex().px(14).gap(6).flex_wrap().children(entries.map(([label, url]) =>
+      h_flex().id(`pv-${label}`).h(24).px(8).gap(5).items_center().rounded(6).border_1().border_color(t.border).cursor_pointer()
+        .hover((e) => e.bg(t.hover)).tooltip(url).on_click(() => H.openUrl(url))
+        .child(div().text_size(11.5).child(label)).child(div().text_size(10.5).text_color(t.dim).child(url.replace(/^https?:\/\//, "")))
+        .child(this.icon("external", t.dim, 10)))) : null;
+
+    const agentList = v_flex().px(8).gap(2).children(agents.length ? agents.map((a) =>
+      h_flex().id(`ag-${a.address}`).px(6).h(26).gap(8).items_center().rounded(6).cursor_pointer().hover((e) => e.bg(t.hover))
+        .on_click(() => run("agent.focus", { terminal: a.address }))
+        .child(a.status === "working" ? this.pulse(statusColor(t, a.status)) : this.dot(statusColor(t, a.status)))
+        .child(div().child(a.program?.name ?? a.app ?? "agent"))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.dim).text_size(11.5).child(a.title ?? ""))
+        .child(div().text_size(10.5).text_color(statusColor(t, a.status)).child(a.status)))
+      : [div().px(6).text_size(11.5).text_color(t.dim).child(`No herdr agent in this worktree — Start ${H.agentChoice()} opens one here.`)]);
+
+    const pipeHead = h_flex().gap(6).items_center()
+      .child(live ? (live.running ? div().text_size(11).text_color(t.working).frames(SPIN, 90) : this.icon("circle-check", t.dim, 11)) : div())
+      .child(div().text_size(10.5).text_color(live?.running ? t.working : t.dim).child(
+        live ? (live.running ? `running${live.full ? " --full" : ""}` : "verify tab finished")
+          : last ? `${last.status} · ${H.ago(last.at)} · ${H.dur(last.ms)}` : "no verify yet"))
+      .when(Boolean(vt), (e) => e.child(div().id("show-vt").cursor_pointer().text_size(10.5).text_color(t.accent)
+        .on_click(() => { run("space.select", { id: vt.space }); run("tab.select", { id: vt.tab }); }).child("show")));
+
+    const pipeline = v_flex().px(14).gap(1).children(names.map((name, i) => {
+      const r = byName.get(name);
+      const finished = live ? !live.running : Boolean(last);
+      const state = r?.state ?? (finished && results.length ? "unrun" : "pending");
+      const c = state === "pending" ? t.dim : statusColor(t, state);
+      const mark = state === "pass" ? this.icon("check", c, 12) : state === "fail" ? this.icon("fail", c, 12)
+        : state === "skipped" ? this.icon("skip", c, 12) : state === "running" ? div().w(12).text_size(11).text_color(c).frames(SPIN, 90)
+        : div().size(6).mx(3).rounded(3).border_1().border_color(t.dim);
+      const w = r?.ms ? Math.max(2, Math.round((r.ms / maxMs) * 100)) : 0;
+      return h_flex().h(22).gap(8).items_center()
+        .child(div().w(14).text_size(10).text_color(t.dim).child(String(i + 1)))
+        .child(h_flex().w(14).justify_center().child(mark))
+        .child(div().w(110).flex_none().truncate().text_color(state === "pending" || state === "unrun" ? t.muted : t.foreground).child(name))
+        .child(div().flex_1().h(6).rounded(3).bg(t.raised).child(div().h_full().rounded(3).w(`${w}%`).bg(c + "aa")))
+        .child(div().w(52).text_right().text_size(11).text_color(t.dim).child(r?.ms != null ? H.dur(r.ms) : state === "unrun" ? "full only" : ""));
+    }));
+
+    const warnings = [...s.blockers, ...s.warnings];
+    return [
+      header, actions,
+      this.section("Git & PR", t), gitBlock,
+      this.section("Usage · OTel", t, snap.usage?.error ? div().text_size(10.5).text_color(t.blocked).child(snap.usage.error) : null),
+      ...(snap.usage?.error ? [] : [this.usageBlock(f.usage, t, { label: "This slot", empty: "No OTel usage attributed to this slot yet." })]),
+      ...(previews ? [this.section("Previews", t), previews] : []),
+      this.section(`Agents in this slot · ${agents.length}`, t), agentList,
+      this.section("Verification pipeline", t, pipeHead), pipeline,
+      ...(warnings.length ? [this.section("Readiness", t), v_flex().px(14).gap(4).children(warnings.map((w) =>
+        div().text_size(11).text_color(t.blocked).child(`⚠ ${w}`)))] : []),
+      this.section(`Runs · slot ${s.id}`, t), this.runList(repo, runs, t, false),
+    ];
+  }
+
+  runList(repo, runs, t, showSlot) {
+    if (!runs.length) return div().px(14).text_size(11.5).text_color(t.dim).child("No runs recorded.");
+    return v_flex().px(8).gap(1).children(runs.map((r) =>
+      h_flex().id(`run-${r.id}`).h(24).px(6).gap(8).items_center().rounded(5).cursor_pointer().hover((e) => e.bg(t.hover))
+        .tooltip(`har env runs get ${r.id}`)
+        .on_click(() => this.tab(`run ${r.id.slice(0, 8)}`, ["har", "env", "runs", "get", r.id, "--repo", repo], repo))
+        .child(this.dot(statusColor(t, r.status), 7))
+        .when(showSlot, (e) => e.child(div().w(22).text_size(11).text_color(t.muted).child(r.slot != null ? `#${r.slot}` : "")))
+        .child(div().w(80).flex_none().truncate().child(r.stage + (r.full ? " ·full" : "")))
+        .child(r.stages ? h_flex().w(90).flex_none().child(this.strip(r.stages.map((x) => x.name), r.stages, t, 5)) : div().w(90))
+        .child(div().flex_1())
+        .child(div().text_size(11).text_color(t.dim).child(H.dur(r.ms)))
+        .child(div().w(56).text_right().text_size(11).text_color(t.dim).child(H.ago(r.at)))));
+  }
+
+  renderStatus(t) {
+    const repo = H.currentRepo(), snap = repo ? H.snapshot(repo) : null;
+    const slots = snap?.slots ?? [], active = slots.filter((s) => s.active);
+    const failing = active.filter((s) => s.lastVerify === "fail").length;
+    const stale = active.filter((s) => s.stale).length;
+    const agents = active.flatMap((s) => H.slotAgents(s));
+    const blocked = agents.filter((a) => a.status === "blocked").length, working = agents.filter((a) => a.status === "working").length;
+    const ru = snap && !snap.usage?.error ? H.repoUsage(snap).all : null;
+    const item = (icon, text, color) => h_flex().gap(5).items_center().child(this.icon(icon, color ?? t.dim, 12)).child(div().text_color(color ?? t.muted).child(text));
+    return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.5).text_color(t.muted)
+      .child(item("har", repo ? `${H.base(repo)} · ${snap?.profile ?? "…"}` : "no harness", t.accent))
+      .child(item("layers", `${active.length}/${slots.length} slots`))
+      .child(item("terminal", `${working} working`, working ? t.working : undefined))
+      .when(blocked > 0, (e) => e.child(item("terminal", `${blocked} need you`, t.blocked)))
+      .when(failing > 0, (e) => e.child(item("fail", `${failing} failing verify`, t.ansi1)))
+      .when(stale > 0, (e) => e.child(item("git-compare", `${stale} stale`, t.blocked)))
+      .when(Boolean(ru?.sessions), (e) => e.child(div().text_color(t.muted).tooltip("OTel usage recorded for this repository (Mission Control)")
+        .child(`${H.money(ru.cost)} · ${H.tokens(ru.tokens)} tokens`)))
+      .child(div().flex_1())
+      .when(Boolean(snap?.at), (e) => e.child(div().text_color(t.dim).child(`updated ${H.ago(new Date(snap.at).toISOString())}`)))
+      .child(div().id("st-mc").cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
+        .on_click(() => repo && H.openMissionControl(repo, H.currentSlot())).child("Mission Control ↗"));
+  }
+}
+
+function rank(v) { return { free: 0, safe: 1, caution: 2, keep: 3 }[v] ?? 4; }
