@@ -9,7 +9,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { props, theme, run, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
+import { home, props, theme, run, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
 import * as H from "./data.js";
 
 const ICON = (n) => `mods/har/icons/${n}.svg`;
@@ -82,7 +82,12 @@ export default class Har extends View {
       this.freeMode = "teardown";
       this.armed = false;
       this.handle = cx.focus_handle();
-      this.handle.focus();
+      const field = (placeholder) => { const st = InputState.new({ placeholder }); st.on("submit", (_e, cx) => { this.submitFree?.(); cx.notify(); }); return st; };
+      this.workIn = field("work unit id, e.g. FE-2071 (optional)");
+      this.titleIn = field("title (optional)");
+      this.msgIn = field("first message for the agent (optional)");
+      this.workIn.focus();
+      cx.timer.after(400, () => this.workIn.focus());
     }
   }
 
@@ -112,7 +117,7 @@ export default class Har extends View {
     this.busy?.add(repo);
     if (repo === H.currentRepo()) { this.loadedTick = H.tick(); this.loadedRepo = repo; }
     cx.spawn(async (cx) => {
-      try { H.store(repo, await H.load(repo)); }
+      try { H.store(repo, await H.load(repo)); if (this.view === "tree") H.syncNames(repo, H.snapshot(repo)); }
       catch (e) { H.store(repo, { ...(H.snapshot(repo) ?? { slots: [], runs: [], stages: [] }), at: Date.now(), error: String(e) }); }
       finally { this.busy?.delete(repo); cx.notify(); }
     });
@@ -161,11 +166,13 @@ export default class Har extends View {
   agent() { return this.agentList.find((a) => a.key === H.agentChoice()) ?? this.agentList[0] ?? { key: "claude", name: "Claude Code", run: ["claude"] }; }
 
   /** Launches slot `id` (freeing it first when `free` is "teardown"/"complete") in its own space, then starts the agent there. */
-  launchWithAgent(repo, id, free = "", agentKey = H.agentChoice(), agentList = this.agentList) {
+  launchWithAgent(repo, id, free = "", agentKey = H.agentChoice(), agentList = this.agentList, opts = {}) {
     const agent = agentList.find((a) => a.key === agentKey) ?? { name: agentKey, run: [agentKey] };
+    const work = (opts.work ?? "").trim(), title = (opts.title ?? "").trim(), message = (opts.message ?? "").trim();
     run("space.new", {
-      name: `${H.base(repo)}#${id}`, folder: repo,
-      argv: H.withPath(["bash", H.launchScript(), repo, String(id), free, "", "", "--", ...agent.run]),
+      name: H.slotLabel(repo, { id, work: work || null }), folder: repo,
+      // claude / codex take the first message as their prompt argument
+      argv: H.withPath(["bash", H.launchScript(), repo, String(id), free, work, title, "--", ...agent.run, ...(message ? [message] : [])]),
     });
     H.selectSlot(id);
   }
@@ -175,7 +182,7 @@ export default class Har extends View {
     const snap = repo ? H.snapshot(repo) : null;
     if (!snap) return;
     const free = snap.slots.find((s) => !s.active);
-    if (free) return this.launchWithAgent(repo, free.id);
+    if (free && H.setting("newMode") === "quick") return this.launchWithAgent(repo, free.id);
     openOverlay({ mod: "har", kind: "dialog", width: 640, height: 0.82, props: { view: "free", repo } });
   }
 
@@ -201,6 +208,32 @@ export default class Har extends View {
     const sp = H.slotSpace(slot);
     if (sp) run("tab.new", { space: sp.id, folder: slot.workDir, argv: agent.run, name: agent.name });
     else run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir, argv: agent.run });
+  }
+
+  /** Runs a hint's quick action for a slot. */
+  hintAction(kind, repo, s, h) {
+    const label = `${H.base(repo)}#${s.id}`;
+    if (kind === "verify-full") return this.verify(repo, s, true);
+    if (kind === "agent") return this.startAgent(repo, s);
+    if (kind === "focus") return run("agent.focus", { terminal: h.agent });
+    if (kind === "free") return this.confirm(`Free slot ${s.id}?`, `Runs har env teardown ${s.id}: stops its services and frees the slot. Branch ${s.branch ?? ""} is kept.`,
+      `teardown · ${label}`, ["har", "env", "teardown", String(s.id), "--repo", repo], repo);
+    if (kind === "push") return this.confirm(`Push slot ${s.id}?`, `Runs git push in ${H.tilde(s.workDir)} (branch ${s.branch ?? "HEAD"}).`,
+      `push · ${label}`, ["sh", "-c", 'git push -u origin HEAD; echo; exec "${SHELL:-bash}" -l'], s.workDir);
+    if (kind === "push-pr") return this.confirm(`Push slot ${s.id} and open a PR?`,
+      `Runs git push -u origin HEAD, then gh pr create --fill in ${H.tilde(s.workDir)}. You can edit the PR on GitHub afterwards.`,
+      `PR · ${label}`, ["sh", "-c", 'git push -u origin HEAD && gh pr create --fill; echo; exec "${SHELL:-bash}" -l'], s.workDir);
+  }
+
+  /** Tears down every slot of `repo` with nothing to lose (merged or empty, clean, no busy agent). */
+  freeMerged(repo, snap) {
+    const list = H.freeable(snap);
+    if (!list.length) return;
+    const ids = list.map((s) => s.id);
+    const script = ids.map((id) => `har env teardown ${id} --repo "$1"`).join(" && ") + '; echo; exec "${SHELL:-bash}" -l';
+    this.confirm(`Free ${ids.length} slot${ids.length > 1 ? "s" : ""}?`,
+      `Tears down slot${ids.length > 1 ? "s" : ""} ${ids.map((i) => `#${i}`).join(", ")}: ${list.map((s) => `#${s.id} ${H.slotFacts(snap, s).reasons.join(", ")}`).join("; ")}. Branches are kept.`,
+      `free slots · ${H.base(repo)}`, ["sh", "-c", script, "sh", repo], repo);
   }
 
   confirm(title, detail, name, argv, repo) {
@@ -406,7 +439,7 @@ export default class Har extends View {
     const vColor = running ? t.working : last ? statusColor(t, last.status) : t.dim;
     return h_flex().id(`sr-${repo}-${s.id}`).pl(30).pr(6).h(26).gap(6).items_center().rounded(6).cursor_pointer()
       .bg(selected ? t.selected : CLEAR).hover((e) => e.bg(selected ? t.selected : t.hover))
-      .tooltip([s.work, f.pr && `PR #${f.pr.number} ${f.pr.state.toLowerCase()}`, s.branch, f.reasons.join(" · ")].filter(Boolean).join("\n"))
+      .tooltip([s.work, f.pr && `PR #${f.pr.number} ${f.pr.state.toLowerCase()}`, s.branch, f.reasons.join(" · "), ...H.hints(snap, s).map((h) => `→ ${h.text}`)].filter(Boolean).join("\n"))
       .on_click(() => { H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" }); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); })
       .child(aState === "working" ? this.pulse(color, 7) : this.dot(color, 7))
       .child(div().w(18).flex_none().text_size(11).text_color(t.muted).child(`#${s.id}`))
@@ -504,9 +537,15 @@ export default class Har extends View {
       .child(row("Spacing", "Gaps and corners around terminals and the right panel.",
         seg("sp", [["none", "None"], ["compact", "Compact"], ["comfortable", "Comfortable"]], H.setting("spacing"),
           (k) => { H.setSetting("spacing", k); H.applySpacing().catch(() => {}); })))
-      .child(row("Links", H.browserInstalled() === false ? "herdr-web-browser is not installed (./install.sh installs it), so links use the system browser."
+      .child(row("New discussion", "Ask: a dialog for work unit, title and first message (Enter starts). Quick: launch the first free slot right away.",
+        seg("nm", [["ask", "Ask"], ["quick", "Quick"]], H.setting("newMode"), (k) => H.setSetting("newMode", k))))
+      .child(row("Names", "Rename herdr spaces and tabs after their slot: har-project#2 · work-unit.",
+        seg("nn", [["on", "On"], ["off", "Off"]], H.setting("nameSpaces") === false ? "off" : "on", (k) => H.setSetting("nameSpaces", k === "on"))))
+      .child(row("Links", H.browserInstalled() === false ? "herdr-web-browser is not installed, so links use the system browser. Install builds it with Rust (cargo) and downloads its own Chrome (~200 MB)."
           : "Preview, PR and Mission Control links open in the herdr browser beside the focused pane.",
-        seg("ln", [["herdr", "herdr browser"], ["system", "System browser"]], H.setting("links"), (k) => H.setSetting("links", k))))
+        H.browserInstalled() === false
+          ? this.button("ln-install", "Install browser", t, () => this.tab("install herdr-web-browser", ["bash", H.browserInstallScript()], home()), { icon: "play" })
+          : seg("ln", [["herdr", "herdr browser"], ["system", "System browser"]], H.setting("links"), (k) => H.setSetting("links", k))))
       .child(v_flex().gap(6).pt(4).border_t(1).border_color(t.border)
         .child(div().pt(8).text_size(12).child("Tools"))
         .child(div().text_size(10.5).text_color(info?.error ? t.ansi1 : t.dim).child(toolsLine))
@@ -534,8 +573,10 @@ export default class Har extends View {
       if (!picked) return;
       if (picked.f.verdict === "keep" && !this.armed) { this.armed = true; return; }
       close();
-      this.launchWithAgent(repo, picked.s.id, picked.s.active ? this.freeMode : "", H.agentChoice(), this.agentList);
+      this.launchWithAgent(repo, picked.s.id, picked.s.active ? this.freeMode : "", H.agentChoice(), this.agentList,
+        { work: this.workIn?.value(), title: this.titleIn?.value(), message: this.msgIn?.value() });
     };
+    this.submitFree = go;
 
     const slotRow = ({ s, f }) => {
       const on = s.id === this.pick, vc = verdictColor(t, f.verdict);
@@ -584,10 +625,16 @@ export default class Har extends View {
       .on_key_down((e, cx) => { if (e.key === "escape") { close(); cx.stop_propagation(); } else if (e.key === "enter") { go(); cx.notify(); cx.stop_propagation(); } })
       .child(v_flex().flex_none().px(18).pt(16).pb(10).gap(4)
         .child(h_flex().items_center().gap(8)
-          .child(div().flex_1().text_size(15).font_semibold().child(anyFree ? `New discussion · ${H.base(repo)}` : `All ${rows.length} slots of ${H.base(repo)} are taken`))
+          .child(div().flex_1().text_size(15).font_semibold().child(anyFree ? `New discussion · ${H.base(repo)}` : `New discussion · all ${rows.length} slots of ${H.base(repo)} are taken`))
           .child(div().text_size(11).text_color(t.dim).child("Esc")))
         .child(div().text_size(11.5).text_color(t.muted).child(anyFree ? "Pick a free slot, or one to free. Slots are ranked from safest to free: merged or empty work first, unpushed or uncommitted work last."
           : "Pick the slot to free for the new discussion. Slots are ranked from safest to free: merged or empty work first, unpushed or uncommitted work last.")))
+      .when(Boolean(this.workIn), (e) => e.child(v_flex().flex_none().px(18).pb(10).gap(6)
+        .child(h_flex().gap(6)
+          .child(Input.new(this.workIn).flex_1().h(30).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(12).text_color(t.foreground))
+          .child(Input.new(this.titleIn).flex_1().h(30).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(12).text_color(t.foreground)))
+        .child(Input.new(this.msgIn).h(30).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(12).text_color(t.foreground))
+        .child(div().text_size(10.5).text_color(t.dim).child("The work unit is bound at launch (har env launch --work-id), names the space, and is what Mission Control and the portal attribute cost to. Enter starts."))))
       .child(this.scroller("har-free-list", v_flex().px(18).pb(8).gap(6).children(rows.map(slotRow)), t))
       .child(v_flex().flex_none().px(18).pt(10).pb(16).gap(10).border_t(1).border_color(t.border)
         .when(Boolean(picked?.s.active), (e) => e.child(h_flex().gap(8)
@@ -642,6 +689,17 @@ export default class Har extends View {
         .child(this.chip(snap.profile ?? "?", t.muted, t)).child(div().flex_1())
         .child(this.button("mc", "Mission Control", t, () => H.openMissionControl(repo, null), { icon: "external" })),
       div().px(14).pt(10).text_size(11.5).text_color(t.dim).child(`${H.tilde(repo)} · ${active.length}/${snap.slots.length} slots in use`),
+      (() => {
+        const fr = H.freeable(snap);
+        return h_flex().px(14).pt(10).gap(6).flex_wrap()
+          .child(this.button("ov-new", "New discussion", t, (cx) => this.newDiscussion(repo, cx), { primary: true, icon: "plus" }))
+          .when(fr.length > 0, (e) => e.child(this.button("ov-free", `Free ${fr.length} done slot${fr.length > 1 ? "s" : ""}…`, t, () => this.freeMerged(repo, snap), { icon: "check" })
+            .tooltip(fr.map((s) => `#${s.id}: ${H.slotFacts(snap, s).reasons.join(", ")}`).join("\n"))))
+          .child(this.button("ov-cleanup", "Clean up stale worktrees…", t, () => this.tab(`cleanup · ${H.base(repo)}`, ["har", "env", "cleanup"], repo), { icon: "x" })
+            .tooltip("har env cleanup: finds session worktrees left behind across your repos and asks before removing them"))
+          .child(this.button("ov-doctor", "Doctor", t, () => this.tab(`doctor · ${H.base(repo)}`, ["har", "env", "doctor", "--repo", repo], repo), { icon: "check" })
+            .tooltip("har env doctor: checks the harness contract"));
+      })(),
     ];
 
     // usage
@@ -832,8 +890,16 @@ export default class Har extends View {
     }));
 
     const warnings = [...s.blockers, ...s.warnings];
+    const hs = H.hints(snap, s);
+    const hintColor = { warn: t.blocked, done: t.ansi2, info: t.muted };
+    const ACTION = { free: "Free…", "verify-full": "Verify --full", push: "Push…", "push-pr": "Push & open PR…", agent: `Start ${H.agentChoice()}`, focus: "Go to agent" };
+    const hintBlock = v_flex().px(14).gap(5).children(hs.map((h, i) => h_flex().gap(8).items_center()
+      .child(this.dot(hintColor[h.level] ?? t.dim, 6))
+      .child(div().flex_1().min_w(0).text_size(11.5).text_color(hintColor[h.level] ?? t.muted).child(h.text))
+      .when(Boolean(h.action), (e) => e.child(this.button(`hint-${i}`, ACTION[h.action], t, () => this.hintAction(h.action, repo, s, h), { h: 22 })))));
     return [
       header, actions,
+      ...(hs.length ? [this.section("Next steps", t), hintBlock] : []),
       this.section("Git & PR", t), gitBlock,
       this.section("Usage · OTel", t, snap.usage?.error ? div().text_size(10.5).text_color(t.blocked).child(snap.usage.error) : null),
       ...(snap.usage?.error ? [] : [this.usageBlock(f.usage, t, { label: "This slot", empty: "No OTel usage attributed to this slot yet." })]),

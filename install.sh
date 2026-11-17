@@ -39,31 +39,11 @@ place "$here/layouts/har.svg" "$dest/layouts/har.svg"
 chmod +x "$dest/mods/har/bin/"*.sh
 
 # ---- herdr-web-browser ------------------------------------------------------------------
-# Not `herdr-web-browser install-cli`: that also rewrites the agents' global instructions on
-# every run. Link the binary ourselves and run only the desktop and Chrome steps.
-browser_bin="$HOME/.local/bin/herdr-web-browser"
+# The panel opens previews, PRs and Mission Control in herdr-web-browser (a browser pane inside
+# herdr). mods/har/bin/install-browser.sh builds it; Settings → Links runs the same script later.
 if [ "$browser" = yes ]; then
-  if [ -x "$browser_bin" ] || command -v herdr-web-browser >/dev/null; then
-    echo "✓ herdr-web-browser found"
-  elif ! command -v cargo >/dev/null || ! command -v git >/dev/null; then
-    echo "→ herdr-web-browser skipped: it builds with Rust — install cargo (https://rustup.rs) and git, then rerun"
-  else
-    src=${HERDR_BROWSER_SRC:-$HOME/.local/src/herdr-web-browser}
-    if [ ! -d "$src/.git" ]; then
-      mkdir -p "$(dirname "$src")"
-      git clone -q https://github.com/MattJColes/herdr-web-browser "$src"
-    fi
-    echo "→ building herdr-web-browser in $src (cargo build --release)…"
-    (cd "$src" && cargo build --release --quiet)
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$src/target/release/herdr-web-browser" "$browser_bin"
-    PATH="$HOME/.local/bin:$PATH" "$browser_bin" install-desktop
-    PATH="$HOME/.local/bin:$PATH" "$browser_bin" install-browser   # its own Chrome for Testing (~200 MB)
-    echo "✓ herdr-web-browser installed: Browser is in herdr's + menu, panel links open in it"
-  fi
-  if [ "$browser_agents" = yes ] && [ -x "$browser_bin" ]; then
-    PATH="$HOME/.local/bin:$PATH" "$browser_bin" install-agents
-  fi
+  "$here/mods/har/bin/install-browser.sh" $([ "$browser_agents" = yes ] && echo --agents) \
+    || echo "→ continuing without herdr-web-browser: links will open in your system browser"
 fi
 
 if command -v herdr-app >/dev/null; then

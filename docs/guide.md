@@ -101,6 +101,14 @@ Below your projects, **Other harnesses on this machine** lists matching HAR proj
 
 ## Starting a new discussion
 
+The **+** on a project row (or **New discussion** in the overview, or `har.new`) opens a dialog:
+
+- **Work unit id** and **title** (optional) are passed to `har env launch --work-id … --work-title …`. The work unit names the herdr space (`har-project#3 · FE-2071`) and is what Mission Control and the portal attribute cost to. It can only be set at launch: HAR has no command yet to bind a work unit to a slot that's already running.
+- **First message** (optional) is handed to the agent as its first prompt (`claude "…"`, `codex "…"`).
+- The first free slot is selected; any slot can be picked instead, including one to free. **Enter** starts.
+
+Set **Settings → New discussion → Quick** to skip the dialog and launch the first free slot straight away.
+
 The **+** on a project row, or the key command `har.new`:
 
 1. With a free slot, it opens a new herdr space named `<project>#<slot>` running `mods/har/bin/launch-agent.sh`, which:
@@ -143,6 +151,13 @@ The button then frees the slot, launches it and starts your agent, all in one vi
 ## Right panel: project overview
 
 Shown when a project is selected and no slot is.
+
+### Quick actions
+
+- **New discussion**: same as the project's **+**.
+- **Free N done slots…**: tears down, after one confirmation, every slot with nothing to lose: PR merged or closed, or no commits, with a clean worktree and no agent working. Branches are kept. Hover it to see which slots and why.
+- **Clean up stale worktrees…**: runs `har env cleanup`, which finds session worktrees left behind across your repos and asks before removing them.
+- **Doctor**: runs `har env doctor` to check the harness.
 
 ### Usage · OTel
 
@@ -191,6 +206,15 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
   - **Logs:** only shown when the harness defines a `logs` stage.
   - **Mission Control:** opens this slot's page in Mission Control.
   - **Complete… / Teardown…:** ask before running.
+- **Next steps:** hints worked out from the slot's state, each with a button where there's something to click:
+  - an agent waiting for you → **Go to agent**;
+  - PR merged, or nothing committed for days → **Free…** (teardown, branch kept);
+  - commits not pushed and no PR → **Push & open PR…** (`git push -u origin HEAD && gh pr create --fill` in the worktree, after you confirm);
+  - commits not pushed to an open PR → **Push…**;
+  - uncommitted changes and no agent → **Start \<agent\>**;
+  - not verified with `--full` since the last change → **Verify --full**;
+  - behind the base branch → a reminder to rebase;
+  - harness bypass reported by `har`.
 - **Git & PR:** PR (click to open), ahead/behind, unpushed, clean/uncommitted, merged into base, PR title, last commit, remote branches, and the [freeing verdict](#freeing-a-slot) with its reasons.
 - **Usage · OTel:** this slot's cost, tokens and models.
 - **Previews:** the slot's preview URLs. Click to open.
@@ -215,6 +239,8 @@ Open them with the gear in the tree header, or `har.settings`.
 | Agent CLI | Any installed agent herdr knows, e.g. `claude`, `codex`. Used by new discussions, Launch and Start agent, and shown next to "HAR" in the header. |
 | Free slots | Show or hide free slots under each project |
 | Spacing | **None** (the default: terminals and panels edge to edge, separated by 1px lines), **Compact** (4px gaps, small corners) or **Comfortable** (8px gaps, rounded corners). Changing it rewrites the spacing values in `~/.config/herdr-app/layouts/har.json`, and herdr applies it immediately. |
+| New discussion | **Ask** (default): the dialog with work unit, title and first message. **Quick**: launch the first free slot right away. |
+| Names | **On** (default): herdr spaces are renamed `har-project#2 · work-unit` and their unnamed tabs `#2 · work-unit`. A space you named yourself is left alone. |
 | Links | **herdr browser** (the default when [herdr-web-browser](https://github.com/MattJColes/herdr-web-browser) is installed): preview, PR and Mission Control links open in a browser pane beside the focused one. **System browser** opens them as before. |
 | Tools | Shows where `har`, `node` and `gh` were found and how. **har path** / **node path** set them by hand (`~/` works); leave them empty to find them automatically. **Save paths** looks again right away. |
 

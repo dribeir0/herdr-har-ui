@@ -53,15 +53,27 @@ The **slot view** shows the work unit, branch and base, Git & PR state with a "s
 ```bash
 git clone https://github.com/os-factory/herdr-har-ui
 cd herdr-har-ui
-./install.sh                    # copies into ~/.config/herdr-app, installs herdr-web-browser if missing
-./install.sh --link             # or symlinks, to edit in place
-./install.sh --no-browser       # skip herdr-web-browser
-./install.sh --browser-agents   # also let it add a "use this browser" section to Claude Code / Codex / OpenCode / Pi global instructions
+./install.sh
 ```
 
-The browser's agent-instructions step is off by default, so installing never changes your agents' global instructions unless you ask.
-
 Then switch to the layout in herdr with `ctrl-shift-l` → **HAR**. On first run, the project list starts with the projects HAR already knows (`~/.har/repos.json`). Add more with **+** in the header or from the search results.
+
+### What `install.sh` sets up
+
+| Piece | What it is | Where |
+|---|---|---|
+| **HAR layout + mod** | the project tree, slot panel and status bar | `~/.config/herdr-app/layouts/har.json`, `mods/har/` |
+| **[herdr-web-browser](https://github.com/MattJColes/herdr-web-browser)** | a browser that opens as a pane inside herdr. The HAR panel opens preview URLs, PRs and Mission Control in it, beside your agent, instead of switching to another app. It also adds **Browser** to herdr's **+** menu. | built from source in `~/.local/src/herdr-web-browser`, linked as `~/.local/bin/herdr-web-browser`, with its own Chrome for Testing (~200 MB) |
+
+The browser is a separate open-source project by Matt Coles. It needs **Rust (`cargo`) and git** to build. If they're missing, the installer skips it and links open in your normal browser; you can install it later from **Settings → Links → Install browser**.
+
+The browser's agent-instructions step (a "use this browser" section in Claude Code / Codex / OpenCode / Pi global instructions) is **off** unless you ask for it.
+
+| Option | Does |
+|---|---|
+| `--link` | symlink instead of copy, so `git pull` updates herdr straight away |
+| `--no-browser` | don't install herdr-web-browser |
+| `--browser-agents` | also run the browser's agent-instructions step |
 
 ## Documentation
 

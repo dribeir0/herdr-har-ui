@@ -1,7 +1,7 @@
 // HAR data for the herdr panels: everything comes from the `har` CLI
 // (`har env status --json`, `har env runs list --json`) and the harness's own
 // `.har/stages.json`, so Mission Control does not need to be running.
-import { exec, readTextFile, writeTextFile, hc, panes, spaces, agents, shared, setShared, home, appHome, focused } from "herdr";
+import { exec, run, readTextFile, writeTextFile, hc, panes, spaces, agents, shared, setShared, home, appHome, focused } from "herdr";
 
 export const MC_URL = "http://localhost:3847";
 const KEY = { repos: "har.repos", repo: "har.repo", slot: "har.slot", snap: "har.snapshot", tick: "har.refresh" };
@@ -32,7 +32,7 @@ export function setLive(v) {
 }
 export const bump = () => setShared(KEY.tick, Date.now());
 /** Panel settings (persisted): slotView "compact" | "detailed", showFree, agent. */
-export const SETTING_DEFAULTS = { slotView: "compact", showFree: true, spacing: "none", links: "herdr" };
+export const SETTING_DEFAULTS = { slotView: "compact", showFree: true, spacing: "none", links: "herdr", newMode: "ask", nameSpaces: true };
 export const setting = (k) => (shared("har.settings") ?? {})[k] ?? SETTING_DEFAULTS[k];
 export const setSetting = (k, v) => setShared("har.settings", { ...(shared("har.settings") ?? {}), [k]: v });
 export const expanded = (r) => (shared("har.expanded") ?? {})[r] ?? true;
@@ -144,6 +144,7 @@ export function withPath(argv) {
 }
 const BIN = () => `${home()}/.config/herdr-app/mods/har/bin`;
 export const launchScript = () => `${BIN()}/launch-agent.sh`;
+export const browserInstallScript = () => `${BIN()}/install-browser.sh`;
 
 async function collect(repo, slots) {
   const { node } = await bins();
@@ -497,4 +498,60 @@ export function tokens(n) {
   if (n < 1e6) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
   if (n < 1e9) return `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)}M`;
   return `${(n / 1e9).toFixed(1)}B`;
+}
+
+// ---- names --------------------------------------------------------------------------------
+/** "har-project#2 · telemetry-depth": how spaces for a slot are named. */
+export const slotLabel = (repo, slot) => `${base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`;
+
+/** Renames herdr spaces (and their unnamed tabs) after the slot they work in (Settings → Names).
+ *  A space someone renamed to something else is left alone. */
+export function syncNames(repo, snap) {
+  if (setting("nameSpaces") === false || !snap) return;
+  for (const s of snap.slots) {
+    if (!s.active) continue;
+    const sp = slotSpace(s);
+    if (!sp) continue;
+    const want = slotLabel(repo, s);
+    const ours = !sp.named || sp.name.startsWith(`${base(repo)}#${s.id}`);
+    if (ours && sp.name !== want) run("space.rename", { id: sp.id, name: want });
+    if (!s.work) continue;
+    const inSlot = new Set(panes().filter((p) => inside(p.cwd, s.workDir)).map((p) => p.tab));
+    for (const t of sp.tabs ?? []) {
+      if (!t.named && inSlot.has(t.id)) run("tab.rename", { id: t.id, name: `#${s.id} · ${s.work}` });
+    }
+  }
+}
+
+// ---- hints ----------------------------------------------------------------------------------
+/**
+ * What to do next with a slot, from its facts: [{ text, level: "info"|"warn"|"done", action? }].
+ * action is one of "free", "verify-full", "push", "push-pr", "agent", "focus".
+ */
+export function hints(snap, slot) {
+  if (!slot?.active) return [];
+  const f = slotFacts(snap, slot);
+  const last = lastVerify(snap, slot);
+  const out = [];
+  const idleDays = slot.since ? (Date.now() - new Date(slot.since).getTime()) / 86400000 : 0;
+  const blocked = f.agents.find((a) => a.status === "blocked");
+  if (blocked) out.push({ text: "An agent in this slot is waiting for you.", level: "warn", action: "focus", agent: blocked.address });
+  if (f.pr?.state === "MERGED" && !f.dirty && !f.unpushed) out.push({ text: `PR #${f.pr.number} is merged — this slot can be freed.`, level: "done", action: "free" });
+  else if ((slot.ahead ?? 0) === 0 && !f.dirty && !f.agents.length && idleDays > 1) out.push({ text: `No commits in ${Math.floor(idleDays)} days and no agent open — free it?`, level: "info", action: "free" });
+  if (f.unpushed > 0 && !f.pr) out.push({ text: `${f.unpushed} commit${f.unpushed > 1 ? "s" : ""} not pushed and no PR yet.`, level: "warn", action: "push-pr" });
+  else if (f.unpushed > 0 && f.pr?.state === "OPEN") out.push({ text: `${f.unpushed} commit${f.unpushed > 1 ? "s" : ""} not pushed to PR #${f.pr.number}.`, level: "warn", action: "push" });
+  if (f.dirty && !f.agents.length) out.push({ text: "Uncommitted changes and no agent open.", level: "warn", action: "agent" });
+  if ((slot.ahead ?? 0) > 0 && f.pr?.state !== "MERGED" && (!last || last.status !== "pass" || !last.full))
+    out.push({ text: last ? `Last verify ${last.full ? "--full " : ""}${last.status} — run verify --full before completing.` : "Never verified — run verify --full before completing.", level: "info", action: "verify-full" });
+  if (slot.stale && f.pr?.state !== "MERGED") out.push({ text: `${slot.behind} commits behind ${slot.baseBranch ?? "base"} — rebase before opening or updating the PR.`, level: "info" });
+  if (slot.usage === "bypass_warning") out.push({ text: "Changes were made outside the harness (har reports a bypass).", level: "info" });
+  return out;
+}
+
+/** Slots that can be freed with nothing to lose: work merged, or nothing committed, clean, no agent. */
+export function freeable(snap) {
+  return (snap?.slots ?? []).filter((s) => s.active).filter((s) => {
+    const f = slotFacts(snap, s);
+    return f.verdict === "safe" && !f.dirty && !f.unpushed && !f.busy.length;
+  });
 }
