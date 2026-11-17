@@ -75,6 +75,14 @@ export default class Har extends View {
       this.nodeInput = mk("nodePath", "optional — node used to run har");
       this.saved = false;
     }
+    if (this.view === "release") {
+      const snap = H.snapshot(props().repo);
+      this.picks = new Set(H.freeable(snap ?? { slots: [] }).map((s) => s.id));
+      this.freeMode = "teardown";
+      this.armed = false;
+      this.handle = cx.focus_handle();
+      this.handle.focus();
+    }
     if (this.view === "free") {
       const p = props();
       const snap = H.snapshot(p.repo);
@@ -103,6 +111,7 @@ export default class Har extends View {
     if (c === "next-repo") { const all = H.repos(); return H.selectRepo(all[(all.indexOf(repo) + 1) % all.length]); }
     if (c === "new") return this.newDiscussion(repo, cx);
     if (c === "chat") return repo && this.chatInRepo(repo);
+    if (c === "free") return repo && this.freeMerged(repo);
     if (c === "settings") return openSettings();
     if (c === "toggle-panel") return run("layout.toggle", { id: "har-panel" });
     if (c === "find-tools") return H.resetBins();   // look for har/node/gh again
@@ -239,14 +248,16 @@ export default class Har extends View {
   }
 
   /** Tears down every slot of `repo` with nothing to lose (merged or empty, clean, no busy agent). */
-  freeMerged(repo, snap) {
-    const list = H.freeable(snap);
-    if (!list.length) return;
-    const ids = list.map((s) => s.id);
-    const script = ids.map((id) => `har env teardown ${id} --repo "$1"`).join(" && ") + '; echo; exec "${SHELL:-bash}" -l';
-    this.confirm(`Free ${ids.length} slot${ids.length > 1 ? "s" : ""}?`,
-      `Tears down slot${ids.length > 1 ? "s" : ""} ${ids.map((i) => `#${i}`).join(", ")}: ${list.map((s) => `#${s.id} ${H.slotFacts(snap, s).reasons.join(", ")}`).join("; ")}. Branches are kept.`,
-      `free slots · ${H.base(repo)}`, ["sh", "-c", script, "sh", repo], repo);
+  /** "Free N done slots…": a dialog listing the slots with the chooser's details, the safe ones ticked. */
+  freeMerged(repo) {
+    openOverlay({ mod: "har", kind: "dialog", width: 640, height: 0.82, props: { view: "release", repo } });
+  }
+
+  /** Tears down (or completes) the ticked slots, one after another, in a tab that stays open on a shell. */
+  releaseSlots(repo, ids, how) {
+    if (!ids.length) return;
+    const script = ids.map((id) => `har env ${how} ${id} --repo "$1" || echo "✗ slot ${id} was not freed"`).join("; ") + '; echo; exec "${SHELL:-bash}" -l';
+    this.tab(`free slots · ${H.base(repo)}`, ["sh", "-c", script, "sh", repo], repo);
   }
 
   confirm(title, detail, name, argv, repo) {
@@ -333,6 +344,7 @@ export default class Har extends View {
     if (this.view === "status") return this.renderStatus(t, cx);
     if (this.view === "detail") return this.renderDetail(t, cx);
     if (this.view === "free") return this.renderFree(t, cx);
+    if (this.view === "release") return this.renderRelease(t, cx);
     if (this.view === "settings") return this.renderSettings(t, cx);
     // the poller follows repo switches and refresh requests
     if (!checking() && (H.tick() !== this.loadedTick || H.currentRepo() !== this.loadedRepo)) this.refresh(cx);
@@ -585,32 +597,21 @@ export default class Har extends View {
   }
 
   // ---- dialog: free a slot -------------------------------------------------------
-  renderFree(t, cx) {
-    const p = props() ?? {};
-    const repo = p.repo, snap = H.snapshot(repo);
-    const rows = (snap?.slots ?? []).map((s) => ({ s, f: H.slotFacts(snap, s) }))
-      .sort((a, b) => rank(a.f.verdict) - rank(b.f.verdict) || a.s.id - b.s.id);
-    const picked = rows.find((x) => x.s.id === this.pick) ?? null;
-    const close = () => closeOverlay(p.overlay);
-    const go = () => {
-      if (!picked) return;
-      if (picked.f.verdict === "keep" && !this.armed) { this.armed = true; return; }
-      close();
-      this.launchWithAgent(repo, picked.s.id, picked.s.active ? this.freeMode : "", H.agentChoice(), this.agentList,
-        { work: this.workIn?.value(), title: this.titleIn?.value(), message: this.msgIn?.value() });
-    };
-    this.submitFree = go;
-
-    const slotRow = ({ s, f }) => {
-      const on = s.id === this.pick, vc = verdictColor(t, f.verdict);
+  /** One slot in the chooser and the free-slots dialog: verdict, reasons, branch, PR, push/dirty state, verify, agents,
+   *  cost and last commit. `multi` draws a checkbox instead of a radio. */
+  slotChoice(snap, { s, f }, on, t, onClick, multi = false) {
+      const vc = verdictColor(t, f.verdict);
       const last = H.lastVerify(snap, s);
       const aState = H.worst(f.agents);
       return v_flex().id(`fr-${s.id}`).p(10).gap(5).rounded(8).cursor_pointer()
         .bg(on ? t.selected : t.surface).border_1().border_color(on ? t.accent : t.border).hover((e) => e.border_color(t.input))
-        .on_click((_e, cx) => { this.pick = s.id; this.armed = false; cx.notify(); })
+        .on_click((_e, cx) => onClick(cx))
         .child(h_flex().items_center().gap(8)
-          .child(div().size(14).flex_none().rounded(7).border_1().border_color(on ? t.accent : t.input)
-            .child(on ? div().size(8).m(2).rounded(4).bg(t.accent) : div()))
+          .child(multi
+            ? div().size(14).flex_none().rounded(3).border_1().border_color(on ? t.accent : t.input).bg(on ? t.accent : CLEAR)
+                .flex().items_center().justify_center().child(on ? this.icon("check", t.background, 10) : div())
+            : div().size(14).flex_none().rounded(7).border_1().border_color(on ? t.accent : t.input)
+                .child(on ? div().size(8).m(2).rounded(4).bg(t.accent) : div()))
           .child(div().font_semibold().child(`Slot ${s.id}`))
           .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(s.work ?? (s.active ? "no work unit" : "")))
           .child(this.chip(VERDICT[f.verdict], vc, t)))
@@ -630,14 +631,77 @@ export default class Har extends View {
             .when(f.usage.sessions > 0, (e) => e.child(div().child(`${H.money(f.usage.cost)} · ${H.tokens(f.usage.tokens)} tok`)))
             .when(Boolean(s.since), (e) => e.child(div().child(`started ${H.ago(s.since)}`))))
           .when(Boolean(f.git?.subject), (e) => e.child(div().pl(22).truncate().text_size(11).text_color(t.muted).child(`last commit: ${f.git.subject}`))));
-    };
+  }
 
-    const mode = (key, label, hint) => h_flex().id(`fm-${key}`).flex_1().p(8).gap(8).items_start().rounded(7).cursor_pointer()
+  freeModeRow(key, label, hint, t) {
+    return h_flex().id(`fm-${key}`).flex_1().p(8).gap(8).items_start().rounded(7).cursor_pointer()
       .border_1().border_color(this.freeMode === key ? t.accent : t.border).bg(this.freeMode === key ? t.selected : CLEAR)
       .on_click((_e, cx) => { this.freeMode = key; cx.notify(); })
       .child(div().mt(2).size(12).flex_none().rounded(6).border_1().border_color(this.freeMode === key ? t.accent : t.input)
         .child(this.freeMode === key ? div().size(6).m(2).rounded(3).bg(t.accent) : div()))
       .child(v_flex().gap(2).child(div().text_size(12).child(label)).child(div().text_size(10.5).text_color(t.dim).child(hint)));
+  }
+
+  renderRelease(t, cx) {
+    const p = props() ?? {};
+    const repo = p.repo, snap = H.snapshot(repo);
+    const rows = (snap?.slots ?? []).filter((s) => s.active).map((s) => ({ s, f: H.slotFacts(snap, s) }))
+      .sort((a, b) => rank(a.f.verdict) - rank(b.f.verdict) || a.s.id - b.s.id);
+    const close = () => closeOverlay(p.overlay);
+    const chosen = rows.filter((x) => this.picks.has(x.s.id));
+    const risky = chosen.filter((x) => x.f.verdict === "keep" || x.f.verdict === "caution");
+    const go = () => {
+      if (!chosen.length) return;
+      if (risky.length && !this.armed) { this.armed = true; return; }
+      close();
+      this.releaseSlots(repo, chosen.map((x) => x.s.id), this.freeMode);
+    };
+    const toggle = (id, cx) => { if (this.picks.has(id)) this.picks.delete(id); else this.picks.add(id); this.armed = false; cx.notify(); };
+    const n = chosen.length;
+    const verb = this.freeMode === "complete" ? "Complete" : "Tear down";
+    const label = !n ? "Pick slots" : this.armed ? `Really free ${n} slot${n > 1 ? "s" : ""}?` : `${verb} ${n} slot${n > 1 ? "s" : ""}`;
+
+    return v_flex().id("har-release").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_color(t.foreground).text_size(12.5)
+      .on_key_down((e, cx) => { if (e.key === "escape") { close(); cx.stop_propagation(); } else if (e.key === "enter") { go(); cx.notify(); cx.stop_propagation(); } })
+      .child(v_flex().flex_none().px(18).pt(16).pb(10).gap(4)
+        .child(h_flex().items_center().gap(8)
+          .child(div().flex_1().text_size(15).font_semibold().child(`Free slots · ${H.base(repo)}`))
+          .child(div().text_size(11).text_color(t.dim).child("Esc")))
+        .child(div().text_size(11.5).text_color(t.muted).child("Slots with nothing to lose are ticked: PR merged or closed, or no commits, with a clean worktree and no agent working. Branches are kept either way.")))
+      .child(this.scroller("har-release-list", v_flex().px(18).pb(8).gap(6).children(rows.length
+        ? rows.map((x) => this.slotChoice(snap, x, this.picks.has(x.s.id), t, (cx) => toggle(x.s.id, cx), true))
+        : [div().py(20).text_color(t.dim).child("No slot is in use.")]), t))
+      .child(v_flex().flex_none().px(18).pt(10).pb(16).gap(10).border_t(1).border_color(t.border)
+        .child(h_flex().gap(8)
+          .child(this.freeModeRow("teardown", "Teardown", "Stops the slots, keeps the branches. Always works.", t))
+          .child(this.freeModeRow("complete", "Complete", "Closes each work attempt; needs a passing verify --full.", t)))
+        .when(risky.length > 0, (e) => e.child(div().text_size(11.5).text_color(t.ansi1)
+          .child(`⚠ ${risky.map((x) => `slot ${x.s.id}: ${x.f.reasons.join(", ")}`).join("; ")}. An agent still running there loses its session.`)))
+        .child(h_flex().items_center().gap(8)
+          .child(div().text_size(11.5).text_color(t.dim).child(`${n} of ${rows.length} selected`))
+          .child(div().flex_1())
+          .child(this.button("rl-cancel", "Cancel", t, close, { h: 30 }))
+          .child(this.button("rl-go", label, t, (cx) => { go(); cx.notify(); }, { primary: true, danger: risky.length > 0, icon: "check", h: 30 }))));
+  }
+
+  renderFree(t, cx) {
+    const p = props() ?? {};
+    const repo = p.repo, snap = H.snapshot(repo);
+    const rows = (snap?.slots ?? []).map((s) => ({ s, f: H.slotFacts(snap, s) }))
+      .sort((a, b) => rank(a.f.verdict) - rank(b.f.verdict) || a.s.id - b.s.id);
+    const picked = rows.find((x) => x.s.id === this.pick) ?? null;
+    const close = () => closeOverlay(p.overlay);
+    const go = () => {
+      if (!picked) return;
+      if (picked.f.verdict === "keep" && !this.armed) { this.armed = true; return; }
+      close();
+      this.launchWithAgent(repo, picked.s.id, picked.s.active ? this.freeMode : "", H.agentChoice(), this.agentList,
+        { work: this.workIn?.value(), title: this.titleIn?.value(), message: this.msgIn?.value() });
+    };
+    this.submitFree = go;
+
+    const slotRow = (x) => this.slotChoice(snap, x, x.s.id === this.pick, t, (cx) => { this.pick = x.s.id; this.armed = false; cx.notify(); });
+    const mode = (key, label, hint) => this.freeModeRow(key, label, hint, t);
 
     const keep = picked?.f.verdict === "keep";
     const label = !picked ? "Pick a slot" : !picked.s.active ? `Launch slot ${picked.s.id} & start ${this.agent().name}`
@@ -721,7 +785,7 @@ export default class Har extends View {
           .child(this.button("ov-new", "New discussion", t, (cx) => this.newDiscussion(repo, cx), { primary: true, icon: "plus" }))
           .child(this.button("ov-chat", "Chat in repo", t, () => this.chatInRepo(repo), { icon: "message" })
             .tooltip(`${H.agentChoice()} in ${H.tilde(repo)} itself: no slot, no worktree, no verify`))
-          .when(fr.length > 0, (e) => e.child(this.button("ov-free", `Free ${fr.length} done slot${fr.length > 1 ? "s" : ""}…`, t, () => this.freeMerged(repo, snap), { icon: "check" })
+          .when(fr.length > 0, (e) => e.child(this.button("ov-free", `Free ${fr.length} done slot${fr.length > 1 ? "s" : ""}…`, t, () => this.freeMerged(repo), { icon: "check" })
             .tooltip(fr.map((s) => `#${s.id}: ${H.slotFacts(snap, s).reasons.join(", ")}`).join("\n"))))
           .child(this.button("ov-cleanup", "Clean up stale worktrees…", t, () => this.tab(`cleanup · ${H.base(repo)}`, ["har", "env", "cleanup"], repo), { icon: "x" })
             .tooltip("har env cleanup: finds session worktrees left behind across your repos and asks before removing them"))

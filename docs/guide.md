@@ -168,7 +168,7 @@ Shown when a project is selected and no slot is.
 
 - **New discussion**: same as the project's **+**.
 - **Chat in repo**: the agent in the project's own checkout, [without a slot](#chatting-without-a-slot).
-- **Free N done slots…**: tears down, after one confirmation, every slot with nothing to lose: PR merged or closed, or no commits, with a clean worktree and no agent working. Branches are kept. Hover it to see which slots and why.
+- **Free N done slots…**: opens a dialog listing every slot in use with the same details as the [slot chooser](#freeing-a-slot): verdict, PR, push and uncommitted state, last verify, agents, cost and last commit. Slots with nothing to lose are ticked: PR merged or closed, or no commits, with a clean worktree and no agent working. Tick or untick any slot, pick **Teardown** or **Complete**, and confirm. Freeing a slot marked *check first* or *keep* asks a second time. They are freed one after another in a tab, and branches are kept.
 - **Clean up stale worktrees…**: runs `har env cleanup`, which finds session worktrees left behind across your repos and asks before removing them.
 - **Doctor**: runs `har env doctor` to check the harness.
 
@@ -268,6 +268,7 @@ Bind them in `~/.config/herdr-app/keys.json`, for example `"alt-n": "har.new"`.
 |---|---|
 | `har.new` | New discussion in the selected project |
 | `har.chat` | [Chat without a slot](#chatting-without-a-slot) in the selected project |
+| `har.free` | The free-slots dialog for the selected project |
 | `har.choose` | Open the slot chooser |
 | `har.slot-1` … `har.slot-N` | Select a slot |
 | `har.overview` | Back to the project overview |
