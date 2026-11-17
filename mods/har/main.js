@@ -16,6 +16,7 @@ const ICON = (n) => `mods/har/icons/${n}.svg`;
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const POLL_MS = 10000;
 const CLEAR = "#00000000";
+const NOT_AGENT = /browser/i;   // programs herdr lists next to agents that can't take a prompt
 
 function statusColor(t, s) {
   return { blocked: t.blocked, done: t.done, working: t.working, idle: t.idle, pass: t.ansi2, fail: t.ansi1, running: t.working, skipped: t.dim }[s] ?? t.dim;
@@ -112,7 +113,8 @@ export default class Har extends View {
   loadAgents(cx) {
     cx.spawn(async (cx) => {
       const list = await knownAgents().catch(() => []);
-      this.agentList = list.filter((a) => a.installed && a.run?.length);
+      // herdr's list also holds programs added as "agents" that are not coding CLIs (e.g. herdr-web-browser)
+      this.agentList = list.filter((a) => a.installed && a.run?.length && !NOT_AGENT.test(`${a.key} ${a.name} ${a.run[0]}`));
       if (!this.agentList.some((a) => a.key === H.agentChoice()) && this.agentList[0]) H.setAgentChoice(this.agentList[0].key);
       cx.notify();
     });
