@@ -59,11 +59,13 @@ export default class Har extends View {
     if (this.view === "detail") {
       H.applySpacing().catch(() => {});   // the layout follows Settings → Spacing
       H.hasBrowser().catch(() => {});
+      H.hasChat().catch(() => {});
       cx.timer.every(1500, (cx) => this.pollLive(cx));
       // key commands ("alt-2": "har.slot-2", "alt-v": "har.verify-full", …) are handled by the status bar
     }
     if (this.view === "settings") {
       H.hasBrowser().then(() => cx.notify()).catch(() => {});
+      H.hasChat().then(() => cx.notify()).catch(() => {});
       const mk = (key, placeholder) => {
         const st = InputState.new({ value: H.setting(key) ?? "", placeholder });
         st.on("submit", (_e, cx) => { this.savePaths(); cx.notify(); });
@@ -100,6 +102,7 @@ export default class Har extends View {
     if (c === "refresh") return H.bump();
     if (c === "next-repo") { const all = H.repos(); return H.selectRepo(all[(all.indexOf(repo) + 1) % all.length]); }
     if (c === "new") return this.newDiscussion(repo, cx);
+    if (c === "chat") return repo && this.chatInRepo(repo);
     if (c === "settings") return openSettings();
     if (c === "toggle-panel") return run("layout.toggle", { id: "har-panel" });
     if (c === "find-tools") return H.resetBins();   // look for har/node/gh again
@@ -175,6 +178,16 @@ export default class Har extends View {
       argv: H.withPath(["bash", H.launchScript(), repo, String(id), free, work, title, "--", ...agent.run, ...(message ? [message] : [])]),
     });
     H.selectSlot(id);
+  }
+
+  /** Chat without a slot: the agent runs in the repo's own checkout, not a worktree. Each chat is a tab in the
+   *  repo's "· chat" space. A shell stays open in the repo when the agent exits. */
+  chatInRepo(repo, agentKey = H.agentChoice(), agentList = this.agentList, message = "") {
+    const agent = agentList.find((a) => a.key === agentKey) ?? this.agent();
+    const argv = H.withPath(["bash", "-c", '"$@"; exec "${SHELL:-bash}"', "chat", ...agent.run, ...(message ? [message] : [])]);
+    const sp = H.chatSpace(repo);
+    if (sp) run("tab.new", { space: sp.id, folder: repo, argv, name: agent.name, focus: true });
+    else run("space.new", { name: H.chatLabel(repo), folder: repo, argv });
   }
 
   /** New discussion: first free slot, or ask which one to free. */
@@ -406,6 +419,10 @@ export default class Har extends View {
         .child(div().flex_none().text_size(12.5).font_semibold().text_color(isCur ? t.foreground : t.muted).child(H.base(r)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(H.tilde(r).replace(/\/[^/]+$/, ""))))
       .child(div().flex_none().text_size(10.5).text_color(active.length ? t.muted : t.dim).child(snap ? `${active.length}/${all.length}` : ""))
+      .child(div().id(`pg-chat-${r}`).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+        .hover((s) => s.bg(t.hover)).tooltip(`Chat in ${H.base(r)} without a slot (${H.agentChoice()} in ${H.tilde(r)})`)
+        .on_click((_e, cx) => { cx.stop_propagation(); H.selectRepo(r); this.chatInRepo(r); })
+        .child(this.icon("message", t.muted, 13)))
       .child(div().id(`pg-new-${r}`).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
         .hover((s) => s.bg(t.hover)).tooltip(`New discussion in ${H.base(r)} (${H.agentChoice()})`)
         .on_click((_e, cx) => { cx.stop_propagation(); H.selectRepo(r); this.newDiscussion(r, cx); })
@@ -546,6 +563,12 @@ export default class Har extends View {
         H.browserInstalled() === false
           ? this.button("ln-install", "Install browser", t, () => this.tab("install herdr-web-browser", ["bash", H.browserInstallScript()], home()), { icon: "play" })
           : seg("ln", [["herdr", "herdr browser"], ["system", "System browser"]], H.setting("links"), (k) => H.setSetting("links", k))))
+      .child(row("Chat view", H.chatInstalled() === false
+          ? "herdr-claude-chat is not installed. It shows a Claude Code terminal as a chat, swapped by ctrl-shift-j."
+          : "ctrl-shift-j, or the toggle at the right of the tab row, swaps a Claude Code terminal and its chat.",
+        H.chatInstalled() === false
+          ? this.button("ch-install", "Install chat", t, () => this.tab("install herdr-claude-chat", ["bash", H.chatInstallScript()], home()), { icon: "play" })
+          : div().text_size(11).text_color(t.dim).child("installed")))
       .child(v_flex().gap(6).pt(4).border_t(1).border_color(t.border)
         .child(div().pt(8).text_size(12).child("Tools"))
         .child(div().text_size(10.5).text_color(info?.error ? t.ansi1 : t.dim).child(toolsLine))
@@ -644,6 +667,9 @@ export default class Har extends View {
         .child(h_flex().items_center().gap(8)
           .child(div().text_size(11.5).text_color(t.dim).child("Agent")).child(this.agentPicker(t, "fr"))
           .child(div().flex_1())
+          .child(this.button("fr-chat", "Chat in repo", t, () => {
+              this.chatInRepo(repo, H.agentChoice(), this.agentList, String(this.msgIn?.value() ?? "").trim()); close();
+            }, { icon: "message", h: 30 }).tooltip("Skip the slot: start the agent in the repo checkout itself"))
           .child(this.button("fr-cancel", "Cancel", t, close, { h: 30 }))
           .child(this.button("fr-go", label, t, (cx) => { go(); cx.notify(); }, { primary: true, danger: keep, icon: "play", h: 30 }))));
   }
@@ -693,6 +719,8 @@ export default class Har extends View {
         const fr = H.freeable(snap);
         return h_flex().px(14).pt(10).gap(6).flex_wrap()
           .child(this.button("ov-new", "New discussion", t, (cx) => this.newDiscussion(repo, cx), { primary: true, icon: "plus" }))
+          .child(this.button("ov-chat", "Chat in repo", t, () => this.chatInRepo(repo), { icon: "message" })
+            .tooltip(`${H.agentChoice()} in ${H.tilde(repo)} itself: no slot, no worktree, no verify`))
           .when(fr.length > 0, (e) => e.child(this.button("ov-free", `Free ${fr.length} done slot${fr.length > 1 ? "s" : ""}…`, t, () => this.freeMerged(repo, snap), { icon: "check" })
             .tooltip(fr.map((s) => `#${s.id}: ${H.slotFacts(snap, s).reasons.join(", ")}`).join("\n"))))
           .child(this.button("ov-cleanup", "Clean up stale worktrees…", t, () => this.tab(`cleanup · ${H.base(repo)}`, ["har", "env", "cleanup"], repo), { icon: "x" })
@@ -954,6 +982,6 @@ export default class Har extends View {
   }
 }
 
-function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 480, height: 680, props: { view: "settings" } }); }
+function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 480, height: 740, props: { view: "settings" } }); }
 
 function rank(v) { return { free: 0, safe: 1, caution: 2, keep: 3 }[v] ?? 4; }

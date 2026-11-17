@@ -1,0 +1,141 @@
+From f47c5b0095c128e87e037ad3a8af9eff0cb08513 Mon Sep 17 00:00:00 2001
+From: Antoine <antoine.frau@kerno.io>
+Date: Tue, 17 Nov 2026 22:30:58 +0100
+Subject: [PATCH] Run on Linux and under wrappers: bash when there's no zsh,
+ wl-paste/xclip for pasted images, find Claude Code under the terminal's
+ foreground process
+
+---
+ mods/claude-chat/composer.js |  2 +-
+ mods/claude-chat/images.js   | 17 +++++++++++++++--
+ mods/claude-chat/main.js     |  2 +-
+ mods/claude-chat/session.js  | 19 ++++++++++++++++---
+ mods/claude-chat/slash.js    |  9 ++++++++-
+ 5 files changed, 41 insertions(+), 8 deletions(-)
+
+diff --git a/mods/claude-chat/composer.js b/mods/claude-chat/composer.js
+index b78eae0..807570b 100644
+--- a/mods/claude-chat/composer.js
++++ b/mods/claude-chat/composer.js
+@@ -155,7 +155,7 @@ export class Composer {
+     this.intercept = intercept;
+     this.io = {
+       hc, pause: (ms) => exec("sleep", [String(ms / 1000)]),
+-      dialog: async () => waitingOnDialog(await findSession({ hc, readTextFile, home }, terminal)),
++      dialog: async () => waitingOnDialog(await findSession({ hc, readTextFile, home, exec }, terminal)),
+     };
+     this.run = serial();
+     this.images = []; this.sent = []; this.note = null; this.ids = 0; this.focused = false;
+diff --git a/mods/claude-chat/images.js b/mods/claude-chat/images.js
+index 864a94c..4f0f4c1 100644
+--- a/mods/claude-chat/images.js
++++ b/mods/claude-chat/images.js
+@@ -22,6 +22,15 @@ function run(argv) {
+   return data.writeToFileAtomically(argv[0], true) ? "ok" : "none";
+ }`;
+ 
++// Linux: the clipboard's PNG, or nothing. A failed read leaves no file behind.
++const READ_CLIPBOARD_LINUX = [
++  'p=$1',
++  'if [ -n "$WAYLAND_DISPLAY" ] && command -v wl-paste >/dev/null; then wl-paste --no-newline --type image/png > "$p" 2>/dev/null',
++  'elif command -v xclip >/dev/null; then xclip -selection clipboard -t image/png -o > "$p" 2>/dev/null',
++  'else false; fi',
++  'if [ -s "$p" ]; then echo ok; else rm -f "$p"; echo none; fi',
++].join("\n");
++
+ export const IMAGE_FOLDER = "chat-images";
+ export const isImagePath = (path) => IMAGE.test(String(path ?? "")) && !CONTROL.test(path);
+ const imageDir = (home) => `${home}/${IMAGE_FOLDER}`;
+@@ -31,8 +40,12 @@ const inFolder = (home, path) => String(path).startsWith(`${imageDir(home)}/`) &
+ export async function clipboardImage(exec, home, name, board = "") {
+   const path = `${imageDir(home)}/${name}.png`;
+   await exec("mkdir", ["-p", "-m", "700", imageDir(home)]);
+-  const r = await exec("osascript", ["-l", "JavaScript", "-e", READ_CLIPBOARD, path, board]);
+-  return r.code === 0 && r.stdout.trim() === "ok" ? path : null;
++  const r = await exec("osascript", ["-l", "JavaScript", "-e", READ_CLIPBOARD, path, board]).catch(() => null);
++  if (r?.code === 0) return r.stdout.trim() === "ok" ? path : null;
++  if (board) return null;
++  // No osascript (Linux): the clipboard's PNG from wl-paste on Wayland or xclip on X11.
++  const l = await exec("sh", ["-c", READ_CLIPBOARD_LINUX, "sh", path]).catch(() => null);
++  return l?.code === 0 && l.stdout.trim() === "ok" ? path : null;
+ }
+ 
+ // Dropped files: images wait in the composer, and anything else goes in as a path.
+diff --git a/mods/claude-chat/main.js b/mods/claude-chat/main.js
+index 634812d..f84e1c2 100644
+--- a/mods/claude-chat/main.js
++++ b/mods/claude-chat/main.js
+@@ -123,7 +123,7 @@ export default class Chat extends View {
+     const newest = this.sessionRead();
+     cx.spawn(async (cx) => {
+       const forced = await testTranscript(appHome(), readTextFile);
+-      const session = await findSession({ hc, readTextFile, home }, this.terminal);
++      const session = await findSession({ hc, readTextFile, home, exec }, this.terminal);
+       if (!newest()) return;
+       if (!session) { if (!this.session && !forced) cx.notify(); return; }
+       const moved = sessionMoved(this.session, session);
+diff --git a/mods/claude-chat/session.js b/mods/claude-chat/session.js
+index 34ae664..e147ccb 100644
+--- a/mods/claude-chat/session.js
++++ b/mods/claude-chat/session.js
+@@ -40,14 +40,27 @@ export function newestSession(sessions) {
+   return sessions.filter(Boolean).sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
+ }
+ 
+-export async function findSession({ hc, readTextFile, home }, terminal) {
++export async function findSession({ hc, readTextFile, home, exec }, terminal) {
+   const got = await hc(["get", terminal, "--json"]).catch(() => null);
+   const pid = got?.code === 0 ? foregroundPid(got.stdout) : null;
+   if (!pid) return null;
+   const dirs = configDirs(home());
+-  const texts = await Promise.all(dirs.map((dir) => readTextFile(sessionFile(dir, pid)).catch(() => null)));
+-  return newestSession(texts.map((text, i) => text && parseSession(text, dirs[i])));
++  const at = async (p) => {
++    const texts = await Promise.all(dirs.map((dir) => readTextFile(sessionFile(dir, p)).catch(() => null)));
++    return newestSession(texts.map((text, i) => text && parseSession(text, dirs[i])));
++  };
++  // Claude Code is often a child of the terminal's foreground process: a wrapper script that keeps a shell open after
++  // it, or a launcher. With `exec`, look up to MAX_DEPTH levels of children for a pid with a session file.
++  let pids = [pid];
++  for (let depth = 0; pids.length && depth <= MAX_DEPTH; depth++) {
++    for (const p of pids) { const s = await at(p); if (s) return s; }
++    if (!exec || depth === MAX_DEPTH) break;
++    const r = await exec("pgrep", ["-P", pids.join(",")]).catch(() => null);
++    pids = r?.code === 0 ? r.stdout.split("\n").map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 16) : [];
++  }
++  return null;
+ }
++const MAX_DEPTH = 3;
+ 
+ // `/resume` and a `cd` can leave the transcript under another project's folder, so look for it by id.
+ export async function locateTranscript({ exec }, session) {
+diff --git a/mods/claude-chat/slash.js b/mods/claude-chat/slash.js
+index 288eb48..653bc6f 100644
+--- a/mods/claude-chat/slash.js
++++ b/mods/claude-chat/slash.js
+@@ -167,6 +167,13 @@ export const SCRIPT = [
+   'pkill -P $dog 2>/dev/null; kill $dog 2>/dev/null',
+   'exit $code',
+ ].join("\n");
++// The interactive shell that runs SCRIPT: the login shell when it's zsh or bash, else zsh, else bash. Linux often has no
++// zsh. `sh -c` gets SCRIPT as $0 and the message and flags after it, and passes them on unchanged.
++export const PICK_SHELL = [
++  'case "${SHELL##*/}" in zsh|bash) s=$SHELL ;; *) s=$(command -v zsh || command -v bash) ;; esac',
++  '[ -n "$s" ] || { echo "no zsh or bash" >&2; exit 127; }',
++  'exec "$s" -ic "$0" "${s##*/}" "$@"',
++].join("\n");
+ // The watchdog's TERM or KILL ends `claude` with 143 or 137.
+ const STOPPED = new Set([143, 137]);
+ 
+@@ -186,7 +193,7 @@ export const trustFiles = (dir, home) => [`${dir}/.claude.json`, `${home}/.claud
+ // gives up at 30 s, so the read always settles.
+ export async function runHeadless(exec, folder, text, trusted) {
+   if (trusted !== true) throw new Error("folder not trusted");
+-  const r = await exec("zsh", ["-ic", SCRIPT, "zsh", userLine(text), ...HEADLESS], { cwd: folder });
++  const r = await exec("sh", ["-c", PICK_SHELL, SCRIPT, userLine(text), ...HEADLESS], { cwd: folder });
+   if (STOPPED.has(r.code)) throw new Error("claude -p took too long");
+   if (r.code !== 0 && !/"subtype"\s*:\s*"init"/.test(String(r.stdout))) throw new Error(`claude -p exited ${r.code}`);
+   return r.stdout;
+-- 
+2.56.0
+

@@ -145,6 +145,19 @@ export function withPath(argv) {
 const BIN = () => `${home()}/.config/herdr-app/mods/har/bin`;
 export const launchScript = () => `${BIN()}/launch-agent.sh`;
 export const browserInstallScript = () => `${BIN()}/install-browser.sh`;
+export const chatInstallScript = () => `${BIN()}/install-chat.sh`;
+
+// herdr-claude-chat: the chat view of a Claude Code terminal (ctrl-shift-j). Installed beside this mod.
+let chatOk = null;
+export async function hasChat() {
+  if (chatOk === null) chatOk = (await exec("test", ["-f", `${appHome()}/mods/claude-chat/mod.json`]).catch(() => null))?.code === 0;
+  return chatOk;
+}
+export const chatInstalled = () => chatOk;
+
+/** The space that holds a repo's slot-less chats ("har-project · chat"), if one is open. */
+export const chatLabel = (repo) => `${base(repo)} · chat`;
+export const chatSpace = (repo) => spaces().find((s) => s.name === chatLabel(repo)) ?? null;
 
 async function collect(repo, slots) {
   const { node } = await bins();

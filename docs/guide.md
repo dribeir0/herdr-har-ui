@@ -33,7 +33,7 @@ This guide covers every part of the HAR layout for herdr: what each panel shows,
 ### Project rows
 
 ```
-⌄ ● har-project  ~/Documents/osfactory   5/5  +
+⌄ ● har-project  ~/Documents/osfactory   5/5  💬  +
 ```
 
 - **⌄ / ›** opens or closes the project's slot list. Each project keeps its own open/closed state.
@@ -45,6 +45,7 @@ This guide covers every part of the HAR layout for herdr: what each panel shows,
   - grey: everything is idle.
 - **Name and path:** the folder name, followed by its parent folder.
 - **5/5:** active slots out of total slots.
+- **💬:** [chat in the project without a slot](#chatting-without-a-slot).
 - **+:** [starts a new discussion](#starting-a-new-discussion) in this project.
 
 Clicking the row selects the project, and the right panel shows its overview.
@@ -119,6 +120,17 @@ The **+** on a project row, or the key command `har.new`:
 
 If the launch fails, the space stops at a shell with the error. If the agent exits, you're left in a shell **inside the slot's worktree**, with the command to rerun it.
 
+## Chatting without a slot
+
+Sometimes you just want to ask the agent something about a project — read code, plan, review — without launching a slot. The chat icon on a project row, **Chat in repo** in the overview, **Chat in repo** in the slot chooser, or `har.chat` starts the agent CLI from [Settings](#settings) **in the project's own checkout**:
+
+- no `har env launch`: no worktree, no slot, no verify, no work unit;
+- it opens as a tab in a herdr space named `<project> · chat`, so these chats stay together. Each click adds a tab;
+- from the slot chooser, the first message you typed goes along;
+- when the agent exits, the tab stays at a shell in the project folder.
+
+The agent works on whatever branch the main checkout has checked out. Anything it edits is edited there, outside any slot, so the harness won't verify it or attribute its cost to a work unit. Use a [new discussion](#starting-a-new-discussion) for changes you mean to ship.
+
 ## Freeing a slot
 
 ![Slot chooser](screenshots/free-slot-popup.png)
@@ -155,6 +167,7 @@ Shown when a project is selected and no slot is.
 ### Quick actions
 
 - **New discussion**: same as the project's **+**.
+- **Chat in repo**: the agent in the project's own checkout, [without a slot](#chatting-without-a-slot).
 - **Free N done slots…**: tears down, after one confirmation, every slot with nothing to lose: PR merged or closed, or no commits, with a clean worktree and no agent working. Branches are kept. Hover it to see which slots and why.
 - **Clean up stale worktrees…**: runs `har env cleanup`, which finds session worktrees left behind across your repos and asks before removing them.
 - **Doctor**: runs `har env doctor` to check the harness.
@@ -242,6 +255,7 @@ Open them with the gear in the tree header, or `har.settings`.
 | New discussion | **Ask** (default): the dialog with work unit, title and first message. **Quick**: launch the first free slot right away. |
 | Names | **On** (default): herdr spaces are renamed `har-project#2 · work-unit` and their unnamed tabs `#2 · work-unit`. A space you named yourself is left alone. |
 | Links | **herdr browser** (the default when [herdr-web-browser](https://github.com/MattJColes/herdr-web-browser) is installed): preview, PR and Mission Control links open in a browser pane beside the focused one. **System browser** opens them as before. |
+| Chat view | Shows whether [herdr-claude-chat](#chat-view) is installed, with an **Install chat** button when it isn't. |
 | Tools | Shows where `har`, `node` and `gh` were found and how. **har path** / **node path** set them by hand (`~/` works); leave them empty to find them automatically. **Save paths** looks again right away. |
 
 Settings, the project list and which projects are open are saved in herdr's shared state, so they survive restarts.
@@ -253,6 +267,7 @@ Bind them in `~/.config/herdr-app/keys.json`, for example `"alt-n": "har.new"`.
 | Command | Does |
 |---|---|
 | `har.new` | New discussion in the selected project |
+| `har.chat` | [Chat without a slot](#chatting-without-a-slot) in the selected project |
 | `har.choose` | Open the slot chooser |
 | `har.slot-1` … `har.slot-N` | Select a slot |
 | `har.overview` | Back to the project overview |
@@ -267,11 +282,30 @@ Bind them in `~/.config/herdr-app/keys.json`, for example `"alt-n": "har.new"`.
 
 Commands are handled by the status bar's copy of the mod, so they keep working while the right panel is hidden.
 
+`ctrl-shift-j` (`claude-chat.swap`) belongs to the [chat view](#chat-view), not this mod.
+
 ## Opening links inside herdr
 
 With [herdr-web-browser](https://github.com/MattJColes/herdr-web-browser) installed (`./install.sh` installs it), every link the HAR panels show opens in a browser pane beside the focused one: slot preview URLs, PR chips, work-unit links and Mission Control. A pane that already shows the browser for that agent is reused. Set **Links → System browser** to go back to your normal browser.
 
 Ctrl-clicking a URL **inside a terminal** still opens your system browser. herdr desktop opens those links itself and has no hook for mods to change that; herdr-web-browser's link handler only works in the herdr TUI.
+
+## Chat view
+
+[herdr-claude-chat](https://github.com/adamentwistle/herdr-claude-chat) by Adam Entwistle (MIT) shows a live Claude Code session as a chat: your messages as bubbles, replies as formatted text, tool calls you can open, code you can copy, permission prompts as cards, and a composer with `/` commands, image paste and a model picker. The session keeps running in its terminal; nothing is restarted.
+
+- **Swap:** `ctrl-shift-j`, or the two-icon toggle at the right of the tab row. It shows only while the focused pane is a Claude Code session. The first press opens the chat beside the terminal and zooms it; later presses swap back and forth.
+- It works for any Claude Code terminal: slot agents, [chats without a slot](#chatting-without-a-slot), or one you started yourself. Codex and other agents keep their terminal.
+- `./install.sh` installs it (skip with `--no-chat`), or **Settings → Chat view → Install chat** later. `mods/har/bin/install-chat.sh` clones it to `~/.local/src/herdr-claude-chat`, copies a pinned version into `~/.config/herdr-app/mods/claude-chat`, and adds `ctrl-shift-j` to `keys.json` when that key is free.
+
+**Linux.** Upstream is built for macOS. The installer applies `mods/har/patches/claude-chat-linux.patch`, which:
+- runs the headless `/usage` read with bash when there's no zsh;
+- reads pasted images with `wl-paste` (Wayland) or `xclip` (X11);
+- finds Claude Code when it runs under a wrapper, as the slot launcher and slot-less chats start it (the terminal's foreground process is then `bash`, not `claude`).
+
+On macOS the patch only adds fallbacks.
+
+**What it reads and runs.** It reads Claude Code's session files and transcripts under `~/.claude`, and the terminal's screen. The first `/` in a folder, and the usage panel, run `claude -p` with `/usage` in that folder (trusted folders only; it uses no turn but does run that folder's hooks). See its [recipe](https://github.com/adamentwistle/herdr-claude-chat/blob/main/RECIPE.md) for the full list.
 
 ## Where the data comes from
 
