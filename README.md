@@ -14,6 +14,7 @@ A [herdr](https://herdr.dev) layout for [HAR](https://github.com/os-factory/har)
 
 - Each project is one line: name, path, slots in use, a chat icon that starts the agent in the project itself (no slot), and a **+** that starts a new discussion.
 - Each slot is one line: a status dot, `#id`, work unit, PR number, `↑` unpushed commits, `●` uncommitted changes, `stale`, and the last verify result.
+- Under the slots, the project's Claude Code and Codex conversations that didn't run in a slot: 4 at first, **Load more** for the rest. Click one to resume it.
 - One search box covers projects, slots, work units, branches, PRs, commits and agent prompts. It also finds HAR projects on this machine that you haven't added yet.
 - The right panel can be hidden with the panel icon in the status bar. Gaps between panes are off by default (Settings → Spacing).
 - A header button switches to detailed cards, which show the branch, ahead/behind, PR state and a strip with one cell per verification stage.

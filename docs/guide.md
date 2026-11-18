@@ -50,6 +50,16 @@ This guide covers every part of the HAR layout for herdr: what each panel shows,
 
 Clicking the row selects the project, and the right panel shows its overview.
 
+### Conversations
+
+Under a project's slots, **CONVERSATIONS** lists the Claude Code and Codex conversations started in the project folder itself, newest first: their title, and how long ago they were last active.
+
+- 4 show at first. **Load 8 more** adds more, up to 60. Collapsing the project goes back to 4.
+- Conversations that ran in a slot's worktree are not listed. Those belong to the slot.
+- Click one to resume it in the project folder (`claude --resume <id>` or `codex resume <id>`), as a tab in the project's `· chat` space.
+- A search lists every conversation whose title matches.
+- Claude Code titles come from the transcript's AI title or first message (`~/.claude/projects/<folder>/`); Codex titles from `~/.codex/session_index.jsonl` (rollouts in `~/.codex/sessions`, last 120 days). `mods/har/bin/conversations.mjs` reads only the first and last 256 KB of each transcript. The list refreshes every 30 s.
+
 ### Compact slot rows (the default)
 
 ```

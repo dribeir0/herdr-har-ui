@@ -27,6 +27,8 @@ const VERDICT = { free: "free", safe: "safe to free", caution: "check first", ke
 export default class Har extends View {
   init(_props, cx) {
     this.view = props()?.view ?? "tree";
+    this.cx = cx;
+    this.convShown = {};       // repo → conversations shown; reset when the project is collapsed
     this.loading = false;
     this.live = null;          // live verify parse for the selected slot (detail view)
     this.agentList = [];       // installed coding agents (knownAgents)
@@ -439,7 +441,7 @@ export default class Har extends View {
         .hover((s) => s.bg(t.hover)).tooltip(`New discussion in ${H.base(r)} (${H.agentChoice()})`)
         .on_click((_e, cx) => { cx.stop_propagation(); H.selectRepo(r); this.newDiscussion(r, cx); })
         .child(this.icon("plus", t.muted, 13)));
-    if (!open) return [head];
+    if (!open) { delete this.convShown[r]; return [head]; }
     if (!snap) return [head, div().pl(30).py(3).text_size(11).text_color(t.dim).child("reading…")];
     const shown = slots.filter((s) => s.active);
     const free = all.filter((s) => !s.active);
@@ -452,8 +454,46 @@ export default class Har extends View {
             .child(div().flex_1()).child(this.icon("play", t.dim, 11))
         : div().pl(14).children(free.map((s) => this.slotCard(r, snap, s, false, t))));
     }
+    rows.push(...this.conversationRows(r, q, t));
     if (snap.error && !H.toolsInfo()?.error) rows.unshift(div().pl(30).text_size(10.5).text_color(t.ansi1).truncate().child(snap.error));
     return [head, v_flex().gap(compact ? 0 : 6).pb(4).children(rows)];
+  }
+
+  /** Claude Code / Codex conversations started in the project folder itself (never a slot's), newest first:
+   *  CONV_PAGE of them, then "Load more". A search shows every title that matches. */
+  conversationRows(r, q, t) {
+    const all = H.conversations(r, () => this.cx?.notify());
+    if (!all?.length) return [];
+    const needle = (q ?? "").trim().toLowerCase();
+    const list = needle ? all.filter((c) => c.title.toLowerCase().includes(needle)) : all;
+    if (!list.length) return [];
+    const n = this.convShown[r] ?? H.CONV_PAGE;
+    const vis = needle ? list : list.slice(0, n);
+    const rows = [div().pl(30).pt(4).pb(1).text_size(10).text_color(t.dim).child("CONVERSATIONS")];
+    rows.push(...vis.map((c) => h_flex().id(`cv-${c.agent}-${c.id}`).pl(30).pr(6).h(24).gap(6).items_center().rounded(6).cursor_pointer()
+      .hover((e) => e.bg(t.hover)).tooltip(`${c.title}\n${c.agent === "codex" ? "codex resume" : "claude --resume"} ${c.id} · in ${H.tilde(r)}`)
+      .on_click(() => { H.selectRepo(r); this.resumeConversation(r, c); })
+      .child(this.icon("message", c.agent === "codex" ? t.ansi4 : t.ansi3, 11))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(c.title))
+      .child(div().flex_none().text_size(10).text_color(t.dim).child(H.ago(c.at)))));
+    if (!needle && list.length > n) {
+      const more = Math.min(H.CONV_MORE, list.length - n);
+      rows.push(h_flex().id(`cv-more-${r}`).pl(30).pr(6).h(22).gap(6).items_center().rounded(6).cursor_pointer().hover((e) => e.bg(t.hover))
+        .on_click((_e, cx) => { this.convShown[r] = n + H.CONV_MORE; cx.notify(); })
+        .child(this.icon("chevron-down", t.dim, 11))
+        .child(div().text_size(11).text_color(t.dim).child(`Load ${more} more · ${list.length - n} left`)));
+    }
+    return rows;
+  }
+
+  /** Reopens a conversation in the project folder, as a tab of its "· chat" space. */
+  resumeConversation(repo, c) {
+    const run_ = c.agent === "codex" ? ["codex", "resume", c.id] : ["claude", "--resume", c.id];
+    const argv = H.withPath(["bash", "-c", '"$@"; exec "${SHELL:-bash}"', "chat", ...run_]);
+    const name = c.title.length > 28 ? `${c.title.slice(0, 27)}…` : c.title;
+    const sp = H.chatSpace(repo);
+    if (sp) run("tab.new", { space: sp.id, folder: repo, argv, name, focus: true });
+    else run("space.new", { name: H.chatLabel(repo), folder: repo, argv });
   }
 
   /** Minimised slot: one line — status, #id, work unit, PR/push/dirty marks, verify, cost. */

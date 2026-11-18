@@ -159,6 +159,29 @@ export const chatInstalled = () => chatOk;
 export const chatLabel = (repo) => `${base(repo)} · chat`;
 export const chatSpace = (repo) => spaces().find((s) => s.name === chatLabel(repo)) ?? null;
 
+// ---- conversations ------------------------------------------------------------------------
+// Claude Code and Codex conversations started in a repo's own folder (not in its slots' worktrees), from
+// bin/conversations.mjs. Cached 30 s per repo; a read in flight is shared. `onChange` asks for a render.
+const convCache = new Map();
+export const CONV_PAGE = 4, CONV_MORE = 8, CONV_LIMIT = 60;
+export function conversations(repo, onChange) {
+  const c = convCache.get(repo);
+  if (!c || (!c.loading && Date.now() - c.at > 30000)) {
+    const entry = { at: Date.now(), list: c?.list ?? null, loading: true };
+    convCache.set(repo, entry);
+    (async () => {
+      try {
+        const { node } = await bins();
+        const r = await runTool(node, [`${BIN()}/conversations.mjs`, repo, String(CONV_LIMIT)], { timeout: 15000 });
+        entry.list = JSON.parse(r.stdout).items ?? [];
+      } catch { entry.list = entry.list ?? []; }
+      entry.loading = false; entry.at = Date.now();
+      onChange?.();
+    })();
+  }
+  return convCache.get(repo).list;
+}
+
 async function collect(repo, slots) {
   const { node } = await bins();
   const list = slots.filter((s) => s.active).map((s) => ({ id: s.id, workDir: s.workDir, baseBranch: s.baseBranch }));
