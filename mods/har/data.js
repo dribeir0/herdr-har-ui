@@ -32,7 +32,7 @@ export function setLive(v) {
 }
 export const bump = () => setShared(KEY.tick, Date.now());
 /** Panel settings (persisted): slotView "compact" | "detailed", showFree, agent. */
-export const SETTING_DEFAULTS = { slotView: "compact", showFree: true, spacing: "none", links: "herdr", newMode: "ask", nameSpaces: true };
+export const SETTING_DEFAULTS = { slotView: "compact", showFree: true, spacing: "none", links: "herdr", newMode: "ask", nameSpaces: true, slotClick: "resume" };
 export const setting = (k) => (shared("har.settings") ?? {})[k] ?? SETTING_DEFAULTS[k];
 export const setSetting = (k, v) => setShared("har.settings", { ...(shared("har.settings") ?? {}), [k]: v });
 export const expanded = (r) => (shared("har.expanded") ?? {})[r] ?? true;

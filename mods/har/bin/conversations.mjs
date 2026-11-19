@@ -92,6 +92,23 @@ function codexTitle(c, names) {
   return null;
 }
 
+// Claude Code sessions with a live process (~/.claude/sessions/<pid>.json), so a click can focus the
+// agent instead of resuming a second copy.
+function liveClaude() {
+  const dir = join(home, ".claude", "sessions"), ids = new Set();
+  for (const f of safeDir(dir)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const o = JSON.parse(readFileSync(join(dir, f), "utf8"));
+      if (o.cwd !== repo || !o.sessionId || !o.pid) continue;
+      process.kill(o.pid, 0);
+      ids.add(o.sessionId);
+    } catch { /* gone */ }
+  }
+  return ids;
+}
+const live = liveClaude();
+
 // Codex writes several rollout files for one session (one per resume): keep the newest.
 const seen = new Set();
 const all = [...claude(), ...codex()].sort((a, b) => b.at - a.at)
@@ -102,6 +119,6 @@ for (const c of all) {
   if (items.length >= limit) break;
   let title = null;
   try { title = c.agent === "claude" ? claudeTitle(c) : codexTitle(c, names); } catch { /* unreadable */ }
-  if (title) items.push({ agent: c.agent, id: c.id, title, at: new Date(c.at).toISOString() });
+  if (title) items.push({ agent: c.agent, id: c.id, title, at: new Date(c.at).toISOString(), live: live.has(c.id) });
 }
 process.stdout.write(JSON.stringify({ total: all.length, items }));

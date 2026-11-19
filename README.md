@@ -45,6 +45,8 @@ The **project overview** shows:
 
 ![Detailed slot cards, factory lines and work units](docs/screenshots/detail-view.png)
 
+Clicking a slot takes you back to its agent, or resumes its last Claude Code or Codex conversation when none is running. The slot view lists all of its conversations.
+
 The **slot view** shows the work unit, branch and base, Git & PR state with a "safe to free" verdict, and usage. It also lists previews, the herdr agents in the worktree, readiness warnings and recent runs. Its verification pipeline updates live while `har env verify` runs in its tab. Its buttons are Verify --full, Verify, Open space, Start agent, Mission Control, Complete… and Teardown….
 
 ![Work units with their slot, attempts and cost](docs/screenshots/work-unit-view.png)

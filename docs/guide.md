@@ -246,6 +246,16 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
 - **Readiness:** warnings from `har env status`, such as untracked paths that won't be in the worktree.
 - **Runs:** the slot's last 6 runs. Click one to open `har env runs get <id>` in a tab.
 
+
+### Coming back to a slot's conversation
+
+Each slot remembers its Claude Code and Codex conversations: they're the ones that ran in its worktree.
+
+- **Clicking a slot** in the tree goes to its agent when one is running there. When none is, it resumes the slot's most recent conversation (`claude --resume <id>` or `codex resume <id>`) in the slot's space. A slot with no conversation just shows its space. **Settings → Slot click → Select** turns the resume off.
+- **Resume · <title>** in the slot view does the same; **New claude** (or your agent) starts a fresh conversation next to it.
+- **Conversations** in the slot view lists all of them, newest first (6, then *Show more*). Click one to resume it. A conversation marked **open** is still running in a terminal: clicking it goes there instead of starting a second copy.
+
+Several conversations in one worktree are normal: the newest is the one a click resumes, and the others stay a click away in the list.
 ## Status bar
 
 The selected project and its profile, slots in use, agents working, agents needing you, failing verifies, stale slots, the project's OTel cost and tokens, when the data was last refreshed, and a Mission Control link.
@@ -263,6 +273,7 @@ Open them with the gear in the tree header, or `har.settings`.
 | Free slots | Show or hide free slots under each project |
 | Spacing | **None** (the default: terminals and panels edge to edge, separated by 1px lines), **Compact** (4px gaps, small corners) or **Comfortable** (8px gaps, rounded corners). Changing it rewrites the spacing values in `~/.config/herdr-app/layouts/har.json`, and herdr applies it immediately. |
 | New discussion | **Ask** (default): the dialog with work unit, title and first message. **Quick**: launch the first free slot right away. |
+| Slot click | **Resume** (default): clicking a slot with no agent running resumes its most recent conversation. **Select**: clicking only selects it. |
 | Names | **On** (default): herdr spaces are renamed `har-project#2 · work-unit` and their unnamed tabs `#2 · work-unit`. A space you named yourself is left alone. |
 | Links | **herdr browser** (the default when [herdr-web-browser](https://github.com/MattJColes/herdr-web-browser) is installed): preview, PR and Mission Control links open in a browser pane beside the focused one. **System browser** opens them as before. |
 | Chat view | Shows whether [herdr-claude-chat](#chat-view) is installed, with an **Install chat** button when it isn't. |

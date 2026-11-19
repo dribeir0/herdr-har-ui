@@ -227,7 +227,40 @@ export default class Har extends View {
     run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir });
   }
 
-  startAgent(repo, slot) {
+  /** Clicking a slot: its agent if one is running there, else (Settings → Slot click → Resume) its most recent
+   *  conversation, resumed in the slot's space. A slot with no conversation just shows its space. */
+  openSlot(repo, s) {
+    H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" });
+    if (!s.active) return;
+    const live = H.slotAgents(s);
+    if (live.length) return run("agent.focus", { terminal: (live.find((a) => a.status === "blocked") ?? live[0]).address });
+    const last = H.setting("slotClick") === "resume" ? (H.conversations(s.workDir, () => this.cx?.notify()) ?? [])[0] : null;
+    if (last) return this.resumeInSlot(repo, s, last);
+    const sp = H.slotSpace(s);
+    if (sp) run("space.select", { id: sp.id });
+  }
+
+  /** Resumes one of a slot's conversations in its worktree: a new tab in the slot's space, or a new space. */
+  resumeInSlot(repo, s, c) {
+    if (c.live) {
+      const live = H.slotAgents(s);
+      if (live.length) return run("agent.focus", { terminal: live[0].address });
+    }
+    const argv = this.resumeArgv(c), name = c.title.length > 28 ? `${c.title.slice(0, 27)}…` : c.title;
+    const sp = H.slotSpace(s);
+    if (sp) run("tab.new", { space: sp.id, folder: s.workDir, argv, name, focus: true });
+    else run("space.new", { name: H.slotLabel(repo, s), folder: s.workDir, argv });
+  }
+
+  resumeArgv(c) {
+    const cmd = c.agent === "codex" ? ["codex", "resume", c.id] : ["claude", "--resume", c.id];
+    return H.withPath(["bash", "-c", '"$@"; exec "${SHELL:-bash}"', "chat", ...cmd]);
+  }
+
+  /** Start agent: resumes the slot's most recent conversation when it has one; `fresh` starts a new one. */
+  startAgent(repo, slot, fresh = false) {
+    const last = fresh ? null : (H.conversations(slot.workDir, () => this.cx?.notify()) ?? [])[0];
+    if (last) return this.resumeInSlot(repo, slot, last);
     const agent = this.agent();
     const sp = H.slotSpace(slot);
     if (sp) run("tab.new", { space: sp.id, folder: slot.workDir, argv: agent.run, name: agent.name });
@@ -488,8 +521,7 @@ export default class Har extends View {
 
   /** Reopens a conversation in the project folder, as a tab of its "· chat" space. */
   resumeConversation(repo, c) {
-    const run_ = c.agent === "codex" ? ["codex", "resume", c.id] : ["claude", "--resume", c.id];
-    const argv = H.withPath(["bash", "-c", '"$@"; exec "${SHELL:-bash}"', "chat", ...run_]);
+    const argv = this.resumeArgv(c);
     const name = c.title.length > 28 ? `${c.title.slice(0, 27)}…` : c.title;
     const sp = H.chatSpace(repo);
     if (sp) run("tab.new", { space: sp.id, folder: repo, argv, name, focus: true });
@@ -509,7 +541,7 @@ export default class Har extends View {
     return h_flex().id(`sr-${repo}-${s.id}`).pl(30).pr(6).h(26).gap(6).items_center().rounded(6).cursor_pointer()
       .bg(selected ? t.selected : CLEAR).hover((e) => e.bg(selected ? t.selected : t.hover))
       .tooltip([s.work, f.pr && `PR #${f.pr.number} ${f.pr.state.toLowerCase()}`, s.branch, f.reasons.join(" · "), ...H.hints(snap, s).map((h) => `→ ${h.text}`)].filter(Boolean).join("\n"))
-      .on_click(() => { H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" }); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); })
+      .on_click(() => this.openSlot(repo, s))
       .child(aState === "working" ? this.pulse(color, 7) : this.dot(color, 7))
       .child(div().w(18).flex_none().text_size(11).text_color(t.muted).child(`#${s.id}`))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(selected ? t.foreground : t.muted)
@@ -531,7 +563,7 @@ export default class Har extends View {
     const card = v_flex().id(`slot-${s.id}`).p(9).gap(5).rounded(8).cursor_pointer()
       .bg(selected ? t.selected : t.surface).border_1().border_color(selected ? t.accent : t.border)
       .hover((e) => e.border_color(t.input))
-      .on_click(() => { H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" }); const sp = H.slotSpace(s); if (sp) run("space.select", { id: sp.id }); });
+      .on_click(() => this.openSlot(repo, s));
 
     if (!s.active) {
       return card.child(h_flex().items_center().gap(7)
@@ -608,6 +640,8 @@ export default class Har extends View {
           (k) => { H.setSetting("spacing", k); H.applySpacing().catch(() => {}); })))
       .child(row("New discussion", "Ask: a dialog for work unit, title and first message (Enter starts). Quick: launch the first free slot right away.",
         seg("nm", [["ask", "Ask"], ["quick", "Quick"]], H.setting("newMode"), (k) => H.setSetting("newMode", k))))
+      .child(row("Slot click", "Resume: clicking a slot with no agent running resumes its most recent Claude Code or Codex conversation in its worktree. Select: only shows the slot.",
+        seg("sc", [["resume", "Resume"], ["select", "Select"]], H.setting("slotClick"), (k) => H.setSetting("slotClick", k))))
       .child(row("Names", "Rename herdr spaces and tabs after their slot: har-project#2 · work-unit.",
         seg("nn", [["on", "On"], ["off", "Off"]], H.setting("nameSpaces") === false ? "off" : "on", (k) => H.setSetting("nameSpaces", k === "on"))))
       .child(row("Links", H.browserInstalled() === false ? "herdr-web-browser is not installed, so links use the system browser. Install builds it with Rust (cargo) and downloads its own Chrome (~200 MB)."
@@ -925,6 +959,8 @@ export default class Har extends View {
   slotDetail(repo, snap, s, t, cx) {
     const f = H.slotFacts(snap, s);
     const agents = f.agents;
+    // Claude Code / Codex conversations that ran in this slot's worktree, newest first
+    const convs = s.active && s.workDir ? (H.conversations(s.workDir, () => this.cx?.notify()) ?? []) : [];
     const vt = H.verifyTerminal(repo, s.id);
     const live = vt && this.live?.terminal === vt.terminal ? this.live : null;
     const last = H.lastVerify(snap, s);
@@ -956,7 +992,11 @@ export default class Har extends View {
       .child(this.button("v-full", "Verify --full", t, () => this.verify(repo, s, true), { primary: true, icon: "play" }))
       .child(this.button("v-quick", "Verify", t, () => this.verify(repo, s, false), { icon: "check" }))
       .child(this.button("space", H.slotSpace(s) ? "Go to space" : "Open space", t, () => this.openSpace(repo, s), { icon: "folder" }))
-      .child(this.button("agent", `Start ${H.agentChoice()}`, t, () => this.startAgent(repo, s), { icon: "terminal" }))
+      .child(convs.length
+        ? this.button("agent", `Resume · ${convs[0].title.length > 24 ? `${convs[0].title.slice(0, 23)}…` : convs[0].title}`, t, () => this.startAgent(repo, s), { icon: "terminal" })
+            .tooltip(`${convs[0].agent === "codex" ? "codex resume" : "claude --resume"} ${convs[0].id} in this worktree`)
+        : this.button("agent", `Start ${H.agentChoice()}`, t, () => this.startAgent(repo, s, true), { icon: "terminal" }))
+      .when(convs.length > 0, (e) => e.child(this.button("agent-new", `New ${H.agentChoice()}`, t, () => this.startAgent(repo, s, true), { icon: "plus" })))
       .when((snap.stageIds ?? []).includes("logs"), (e) => e.child(this.button("logs", "Logs", t, () => this.tab(`logs · ${H.base(repo)}#${s.id}`, ["har", "env", "logs", String(s.id), "--repo", repo], repo), { icon: "logs" })))
       .child(this.button("mc", "Mission Control", t, () => H.openMissionControl(repo, s.id), { icon: "external" }))
       .child(this.button("complete", "Complete…", t, () => this.confirm(`Complete slot ${s.id}?`,
@@ -986,6 +1026,18 @@ export default class Har extends View {
         .hover((e) => e.bg(t.hover)).tooltip(url).on_click(() => H.openUrl(url))
         .child(div().text_size(11.5).child(label)).child(div().text_size(10.5).text_color(t.dim).child(url.replace(/^https?:\/\//, "")))
         .child(this.icon("external", t.dim, 10)))) : null;
+
+    const convList = v_flex().px(8).gap(2).children(convs.slice(0, this.slotConvMore === s.id ? 60 : 6).map((c) =>
+      h_flex().id(`sc-${c.agent}-${c.id}`).px(6).h(24).gap(8).items_center().rounded(6).cursor_pointer().hover((e) => e.bg(t.hover))
+        .tooltip(`${c.title}\n${c.live ? "open in a terminal: click to go to it" : `${c.agent === "codex" ? "codex resume" : "claude --resume"} ${c.id}`}`)
+        .on_click(() => this.resumeInSlot(repo, s, c))
+        .child(this.icon("message", c.agent === "codex" ? t.ansi4 : t.ansi3, 11))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(c.title))
+        .when(Boolean(c.live), (e) => e.child(div().text_size(10).text_color(t.working).child("open")))
+        .child(div().flex_none().text_size(10).text_color(t.dim).child(H.ago(c.at)))))
+      .when(convs.length > 6 && this.slotConvMore !== s.id, (e) => e.child(h_flex().id("sc-more").px(6).h(22).gap(6).items_center().rounded(6).cursor_pointer()
+        .hover((x) => x.bg(t.hover)).on_click((_e, cx) => { this.slotConvMore = s.id; cx.notify(); })
+        .child(this.icon("chevron-down", t.dim, 11)).child(div().text_size(11).text_color(t.dim).child(`Show ${convs.length - 6} more`))));
 
     const agentList = v_flex().px(8).gap(2).children(agents.length ? agents.map((a) =>
       h_flex().id(`ag-${a.address}`).px(6).h(26).gap(8).items_center().rounded(6).cursor_pointer().hover((e) => e.bg(t.hover))
@@ -1037,6 +1089,7 @@ export default class Har extends View {
       ...(snap.usage?.error ? [] : [this.usageBlock(f.usage, t, { label: "This slot", empty: "No OTel usage attributed to this slot yet." })]),
       ...(previews ? [this.section("Previews", t), previews] : []),
       this.section(`Agents in this slot · ${agents.length}`, t), agentList,
+      ...(convs.length ? [this.section(`Conversations · ${convs.length}`, t), convList] : []),
       this.section("Verification pipeline", t, pipeHead), pipeline,
       ...(warnings.length ? [this.section("Readiness", t), v_flex().px(14).gap(4).children(warnings.map((w) =>
         div().text_size(11).text_color(t.blocked).child(`⚠ ${w}`)))] : []),
@@ -1086,6 +1139,6 @@ export default class Har extends View {
   }
 }
 
-function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 480, height: 740, props: { view: "settings" } }); }
+function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 480, height: 800, props: { view: "settings" } }); }
 
 function rank(v) { return { free: 0, safe: 1, caution: 2, keep: 3 }[v] ?? 4; }
