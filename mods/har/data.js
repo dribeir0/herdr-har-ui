@@ -160,27 +160,50 @@ export const chatLabel = (repo) => `${base(repo)} · chat`;
 export const chatSpace = (repo) => spaces().find((s) => s.name === chatLabel(repo)) ?? null;
 
 // ---- conversations ------------------------------------------------------------------------
-// Claude Code and Codex conversations started in a repo's own folder (not in its slots' worktrees), from
-// bin/conversations.mjs. Cached 30 s per repo; a read in flight is shared. `onChange` asks for a render.
+// Claude Code and Codex conversations, from bin/conversations.mjs. Cached 30 s; a read in flight is shared.
+//   conversations(repo, onChange, { repo, exclude: [branches] })   a project's own (not its active slots')
+//   conversations(workDir, onChange, { repo, branch })            a slot's: started in its worktree, or bound
+//                                                                  to it by HAR when they launched it
+// `onChange` asks for a render once the list arrives; slotConversations() waits for it.
 const convCache = new Map();
 export const CONV_PAGE = 4, CONV_MORE = 8, CONV_LIMIT = 60;
-export function conversations(repo, onChange) {
-  const c = convCache.get(repo);
-  if (!c || (!c.loading && Date.now() - c.at > 30000)) {
-    const entry = { at: Date.now(), list: c?.list ?? null, loading: true };
-    convCache.set(repo, entry);
-    (async () => {
-      try {
-        const { node } = await bins();
-        const r = await runTool(node, [`${BIN()}/conversations.mjs`, repo, String(CONV_LIMIT)], { timeout: 15000 });
-        entry.list = JSON.parse(r.stdout).items ?? [];
-      } catch { entry.list = entry.list ?? []; }
-      entry.loading = false; entry.at = Date.now();
-      onChange?.();
-    })();
-  }
-  return convCache.get(repo).list;
+function convEntry(dir, scope) {
+  const extra = !scope?.repo ? [] : scope.branch ? ["--repo", scope.repo, "--branch", scope.branch]
+    : scope.exclude?.length ? ["--repo", scope.repo, "--exclude-branches", scope.exclude.join(",")] : [];
+  const key = [dir, ...extra].join("\n");
+  const c = convCache.get(key);
+  if (c && (c.loading || Date.now() - c.at <= 30000)) return c;
+  const entry = { at: Date.now(), list: c?.list ?? null, loading: true, onChange: null };
+  convCache.set(key, entry);
+  entry.done = (async () => {
+    try {
+      const { node } = await bins();
+      const r = await runTool(node, [`${BIN()}/conversations.mjs`, dir, String(CONV_LIMIT), ...extra], { timeout: 15000 });
+      entry.list = JSON.parse(r.stdout).items ?? [];
+    } catch { entry.list = entry.list ?? []; }
+    entry.loading = false; entry.at = Date.now();
+    entry.onChange?.();
+  })();
+  return entry;
 }
+export function conversations(dir, onChange, scope) {
+  const e = convEntry(dir, scope);
+  if (e.loading) e.onChange = onChange;
+  return e.list;
+}
+const slotScope = (repo, slot) => ({ repo, branch: slot.branch ?? null });
+/** A slot's conversations for rendering (null while the first read runs). */
+export const slotConvs = (repo, slot, onChange) => (slot?.workDir ? conversations(slot.workDir, onChange, slotScope(repo, slot)) : []);
+/** A slot's conversations, waiting for the read when nothing is cached yet. */
+export async function slotConversations(repo, slot) {
+  if (!slot?.workDir) return [];
+  const e = convEntry(slot.workDir, slotScope(repo, slot));
+  if (e.list == null) await e.done;
+  return e.list ?? [];
+}
+/** A project's own conversations, without the ones bound to its active slots. */
+export const repoConvs = (repo, onChange) =>
+  conversations(repo, onChange, { repo, exclude: (snapshot(repo)?.slots ?? []).filter((s) => s.active && s.branch).map((s) => s.branch) });
 
 async function collect(repo, slots) {
   const { node } = await bins();

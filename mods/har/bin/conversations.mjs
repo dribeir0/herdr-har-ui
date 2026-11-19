@@ -1,15 +1,26 @@
 #!/usr/bin/env node
-// Claude Code and Codex conversations started in a repo's own folder, newest first, as JSON:
-//   { total, items: [{ agent: "claude" | "codex", id, title, at }] }
-// Usage: conversations.mjs <repo> [limit=50]
-// Only the repo folder itself counts. Slots run in their own worktrees (other folders), so their conversations
-// never show here. Transcripts can be tens of MB: only their first and last 256 KB are read.
+// Claude Code and Codex conversations of a folder, newest first, as JSON:
+//   { total, items: [{ agent: "claude" | "codex", id, title, at, cwd, live, liveIn, bound }] }
+// Usage:
+//   conversations.mjs <dir> [limit=50]                                  conversations started in <dir>
+//   conversations.mjs <worktree> [limit] --repo <repo> --branch <b>     a slot's: started in its worktree, plus
+//        the ones HAR bound to the slot when they launched it (<repo>/.har/session-bindings, same branch). Those
+//        often ran in the repo folder (Claude Desktop, an IDE): `cwd` says where to resume them.
+//   conversations.mjs <repo> [limit] --repo <repo> --exclude-branches a,b   the repo's own, without the ones
+//        bound to these (active) slots
+// `liveIn` is where a live Claude Code session runs ("cli", "claude-desktop", …): resuming it a second time
+// would make two writers of one conversation. Transcripts can be tens of MB: only their first and last 256 KB
+// are read.
 import { openSync, readSync, closeSync, statSync, readdirSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const [repo, limitArg] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const flag = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null; };
+const [repo, limitArg] = argv.filter((a, i) => !a.startsWith("--") && !argv[i - 1]?.startsWith("--"));
 const limit = Number(limitArg) || 50;
+const harRepo = flag("--repo"), branch = flag("--branch");
+const excludeBranches = new Set((flag("--exclude-branches") ?? "").split(",").filter(Boolean));
 const home = homedir();
 const CHUNK = 256 * 1024;
 const DAYS = 120; // Codex rollouts older than this are not scanned
@@ -40,8 +51,29 @@ function claude() {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => {
     const path = join(dir, f);
-    return { agent: "claude", id: f.slice(0, -6), path, at: statSync(path).mtimeMs };
+    return { agent: "claude", id: f.slice(0, -6), path, at: statSync(path).mtimeMs, cwd: repo };
   });
+}
+
+// Sessions HAR recorded as launching (or holding) a slot, from <repo>/.har/session-bindings/*.json:
+// [{ agentTool, sessionId, branch, kind }]
+function bindings() {
+  if (!harRepo) return [];
+  const dir = join(harRepo, ".har", "session-bindings");
+  return safeDir(dir).flatMap((f) => { try { return [JSON.parse(readFileSync(join(dir, f), "utf8"))]; } catch { return []; } })
+    .filter((b) => b?.sessionId && b.branch);
+}
+
+// A Claude Code transcript by session id, wherever it was started.
+function claudeById(id) {
+  const root = join(home, ".claude", "projects");
+  for (const d of safeDir(root)) {
+    const path = join(root, d, `${id}.jsonl`);
+    if (!existsSync(path)) continue;
+    const cwd = /"cwd":"((?:[^"\\]|\\.)*)"/.exec(slice(path, 65536, false))?.[1];
+    return { agent: "claude", id, path, at: statSync(path).mtimeMs, cwd: cwd ? JSON.parse(`"${cwd}"`) : null, bound: true };
+  }
+  return null;
 }
 
 function claudeTitle(c) {
@@ -54,7 +86,7 @@ function claudeTitle(c) {
   return first ? clip(typed(first.message.content)) : null;
 }
 
-function codex() {
+function codex(ids) {
   const root = join(home, ".codex", "sessions");
   if (!existsSync(root)) return [];
   const since = Date.now() - DAYS * 86400e3;
@@ -65,10 +97,12 @@ function codex() {
     for (const f of safeDir(day)) {
       if (!f.endsWith(".jsonl")) continue;
       const path = join(day, f);
-      const meta = /"cwd":"((?:[^"\\]|\\.)*)"/.exec(slice(path, 8192, false));
-      if (!meta || JSON.parse(`"${meta[1]}"`) !== repo) continue;
-      const id = /"id":"([0-9a-f-]{36})"/.exec(slice(path, 8192, false))?.[1];
-      if (id) out.push({ agent: "codex", id, path, at: statSync(path).mtimeMs });
+      const head = slice(path, 8192, false);
+      const meta = /"cwd":"((?:[^"\\]|\\.)*)"/.exec(head);
+      const id = /"id":"([0-9a-f-]{36})"/.exec(head)?.[1];
+      const cwd = meta ? JSON.parse(`"${meta[1]}"`) : null;
+      if (!id || !(cwd === repo || ids?.has(id))) continue;
+      out.push({ agent: "codex", id, path, at: statSync(path).mtimeMs, cwd, bound: cwd !== repo && Boolean(ids?.has(id)) });
     }
   }
   return out;
@@ -92,26 +126,32 @@ function codexTitle(c, names) {
   return null;
 }
 
-// Claude Code sessions with a live process (~/.claude/sessions/<pid>.json), so a click can focus the
-// agent instead of resuming a second copy.
+// Claude Code sessions with a live process (~/.claude/sessions/<pid>.json) → where they run ("cli",
+// "claude-desktop"), so a click can focus the agent instead of resuming a second copy.
 function liveClaude() {
-  const dir = join(home, ".claude", "sessions"), ids = new Set();
+  const dir = join(home, ".claude", "sessions"), ids = new Map();
   for (const f of safeDir(dir)) {
     if (!f.endsWith(".json")) continue;
     try {
       const o = JSON.parse(readFileSync(join(dir, f), "utf8"));
-      if (o.cwd !== repo || !o.sessionId || !o.pid) continue;
+      if (!o.sessionId || !o.pid) continue;
       process.kill(o.pid, 0);
-      ids.add(o.sessionId);
+      ids.set(o.sessionId, o.entrypoint ?? "cli");
     } catch { /* gone */ }
   }
   return ids;
 }
 const live = liveClaude();
 
+const binds = bindings();
+const boundIds = new Set(binds.filter((b) => b.branch === branch).map((b) => b.sessionId));
+const excluded = new Set(binds.filter((b) => excludeBranches.has(b.branch)).map((b) => b.sessionId));
+const boundClaude = [...boundIds].map((id) => claudeById(id)).filter(Boolean);
+
 // Codex writes several rollout files for one session (one per resume): keep the newest.
 const seen = new Set();
-const all = [...claude(), ...codex()].sort((a, b) => b.at - a.at)
+const all = [...claude(), ...boundClaude, ...codex(boundIds)].sort((a, b) => b.at - a.at)
+  .filter((c) => !excluded.has(c.id))
   .filter((c) => { const k = `${c.agent}:${c.id}`; if (seen.has(k)) return false; seen.add(k); return true; });
 const names = codexTitles();
 const items = [];
@@ -119,6 +159,7 @@ for (const c of all) {
   if (items.length >= limit) break;
   let title = null;
   try { title = c.agent === "claude" ? claudeTitle(c) : codexTitle(c, names); } catch { /* unreadable */ }
-  if (title) items.push({ agent: c.agent, id: c.id, title, at: new Date(c.at).toISOString(), live: live.has(c.id) });
+  if (title) items.push({ agent: c.agent, id: c.id, title, at: new Date(c.at).toISOString(), cwd: c.cwd && existsSync(c.cwd) ? c.cwd : repo,   // a removed worktree: resume from this folder
+    live: live.has(c.id), liveIn: live.get(c.id) ?? null, bound: Boolean(c.bound) });
 }
 process.stdout.write(JSON.stringify({ total: all.length, items }));

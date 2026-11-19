@@ -255,12 +255,17 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
 
 ### Coming back to a slot's conversation
 
-Each slot remembers its Claude Code and Codex conversations: they're the ones that ran in its worktree.
+A slot's Claude Code and Codex conversations are:
+- the ones that ran in its worktree;
+- the one that launched it, even when it ran in the project folder (Claude Desktop, an IDE). HAR records it in `.har/session-bindings` when `har env launch` runs from an agent session, and the panel resumes it from the folder it ran in.
+
+These don't appear in the project's own Conversations list.
 
 - **Clicking a slot** in the tree goes to its agent when one is running there. When none is, it resumes the slot's most recent conversation (`claude --resume <id>` or `codex resume <id>`) in the slot's space. A slot with no conversation shows its space, and opens one in its worktree when there isn't one yet. **Settings → Slot click → Select** turns the resume off.
 - **Resume · <title>** in the slot view does the same; **New claude** (or your agent) starts a fresh conversation next to it.
 - **Conversations** in the slot view lists all of them, newest first (6, then *Show more*). Click one to resume it. A conversation marked **open** is still running in a terminal: clicking it goes there instead of starting a second copy.
 - **A conversation that's already open in a tab** is focused instead of resumed again, from the slot view and from a project's conversation list.
+- **A conversation still open in Claude Desktop** (or a terminal outside herdr) isn't resumed a second time, since two copies would write to one conversation. The click shows the slot's space and tells you where it's open.
 
 Several conversations in one worktree are normal: the newest is the one a click resumes, and the others stay a click away in the list.
 ## Status bar

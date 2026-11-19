@@ -9,7 +9,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { home, props, theme, run, spaces, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
+import { home, props, theme, run, spaces, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
 import * as H from "./data.js";
 
 const ICON = (n) => `mods/har/icons/${n}.svg`;
@@ -122,7 +122,7 @@ export default class Har extends View {
     if (!slot?.active) return;
     if (c === "verify" || c === "verify-full") this.verify(repo, slot, c === "verify-full");
     if (c === "open") this.openSpace(repo, slot);
-    if (c === "agent") this.startAgent(repo, slot, cx);
+    if (c === "agent") this.startAgent(repo, slot);
   }
 
   // ---- data ----------------------------------------------------------------
@@ -228,28 +228,38 @@ export default class Har extends View {
   }
 
   /** Clicking a slot: its agent if one is running there, else (Settings → Slot click → Resume) its most recent
-   *  conversation, resumed in the slot's space. A slot with no conversation just shows its space. */
+   *  conversation, resumed in the slot's space. A slot with no conversation shows (or opens) its space. */
   openSlot(repo, s) {
     H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" });
     if (!s.active) return;
     const live = H.slotAgents(s);
     if (live.length) return run("agent.focus", { terminal: (live.find((a) => a.status === "blocked") ?? live[0]).address });
-    const last = H.setting("slotClick") === "resume" ? (H.conversations(s.workDir, () => this.cx?.notify()) ?? [])[0] : null;
-    if (last) return this.resumeInSlot(repo, s, last);
-    this.openSpace(repo, s);
+    if (H.setting("slotClick") !== "resume") return this.openSpace(repo, s);
+    // the list may not be read yet on a first click: wait for it rather than miss the conversation
+    H.slotConversations(repo, s).then((list) => {
+      if (list[0]) this.resumeInSlot(repo, s, list[0]);
+      else this.openSpace(repo, s);
+      this.cx?.notify();
+    }).catch(() => this.openSpace(repo, s));
   }
 
-  /** Resumes one of a slot's conversations in its worktree: a new tab in the slot's space, or a new space. */
+  /** Resumes one of a slot's conversations: focuses the tab already running it, else a new tab in the slot's
+   *  space (or a new space) started in the folder the conversation ran in. A conversation still open in another
+   *  app (Claude Desktop, a terminal outside herdr) isn't resumed a second time. */
   resumeInSlot(repo, s, c) {
-    if (c.live) {
-      const live = H.slotAgents(s);
-      if (live.length) return run("agent.focus", { terminal: live[0].address });
-    }
-    const argv = this.resumeArgv(c), name = this.convTabName(c);
+    const name = this.convTabName(c);
     const sp = H.slotSpace(s, repo);
     if (this.focusConvTab(sp, name)) return;
-    if (sp) run("tab.new", { space: sp.id, folder: s.workDir, argv, name, focus: true });
-    else run("space.new", { name: H.slotLabel(repo, s), folder: s.workDir, argv });
+    if (c.live) {
+      const here = H.slotAgents(s);
+      if (here.length && c.liveIn !== "claude-desktop") return run("agent.focus", { terminal: here[0].address });
+      this.openSpace(repo, s);
+      return notify({ title: `"${c.title}" is open in ${c.liveIn === "claude-desktop" ? "Claude Desktop" : "another terminal"}`,
+        body: "Continue it there, or close it there and click the slot again to resume it here.", level: "info", timeout: 8000 });
+    }
+    const argv = this.resumeArgv(c), folder = c.cwd || s.workDir;
+    if (sp) run("tab.new", { space: sp.id, folder, argv, name, focus: true });
+    else run("space.new", { name: H.slotLabel(repo, s), folder, argv });
   }
 
   convTabName(c) { return c.title.length > 28 ? `${c.title.slice(0, 27)}…` : c.title; }
@@ -272,12 +282,13 @@ export default class Har extends View {
 
   /** Start agent: resumes the slot's most recent conversation when it has one; `fresh` starts a new one. */
   startAgent(repo, slot, fresh = false) {
-    const last = fresh ? null : (H.conversations(slot.workDir, () => this.cx?.notify()) ?? [])[0];
-    if (last) return this.resumeInSlot(repo, slot, last);
+    if (!fresh) {
+      return H.slotConversations(repo, slot).then((list) => list[0] ? this.resumeInSlot(repo, slot, list[0]) : this.startAgent(repo, slot, true));
+    }
     const agent = this.agent();
     const sp = H.slotSpace(slot, repo);
     if (sp) run("tab.new", { space: sp.id, folder: slot.workDir, argv: agent.run, name: agent.name });
-    else run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir, argv: agent.run });
+    else run("space.new", { name: H.slotLabel(repo, slot), folder: slot.workDir, argv: agent.run });
   }
 
   /** Runs a hint's quick action for a slot. */
@@ -532,7 +543,7 @@ export default class Har extends View {
   /** Claude Code / Codex conversations started in the project folder itself (never a slot's), newest first:
    *  CONV_PAGE of them, then "Load more". A search shows every title that matches. */
   conversationRows(r, q, t) {
-    const all = H.conversations(r, () => this.cx?.notify());
+    const all = H.repoConvs(r, () => this.cx?.notify());
     if (!all?.length) return [];
     const needle = (q ?? "").trim().toLowerCase();
     const list = needle ? all.filter((c) => c.title.toLowerCase().includes(needle)) : all;
@@ -998,7 +1009,7 @@ export default class Har extends View {
     const f = H.slotFacts(snap, s);
     const agents = f.agents;
     // Claude Code / Codex conversations that ran in this slot's worktree, newest first
-    const convs = s.active && s.workDir ? (H.conversations(s.workDir, () => this.cx?.notify()) ?? []) : [];
+    const convs = s.active ? (H.slotConvs(repo, s, () => this.cx?.notify()) ?? []) : [];
     const vt = H.verifyTerminal(repo, s.id);
     const live = vt && this.live?.terminal === vt.terminal ? this.live : null;
     const last = H.lastVerify(snap, s);
@@ -1032,7 +1043,7 @@ export default class Har extends View {
       .child(this.button("space", H.slotSpace(s, repo) ? "Go to space" : "Open space", t, () => this.openSpace(repo, s), { icon: "folder" }))
       .child(convs.length
         ? this.button("agent", `Resume · ${convs[0].title.length > 24 ? `${convs[0].title.slice(0, 23)}…` : convs[0].title}`, t, () => this.startAgent(repo, s), { icon: "terminal" })
-            .tooltip(`${convs[0].agent === "codex" ? "codex resume" : "claude --resume"} ${convs[0].id} in this worktree`)
+            .tooltip(`${convs[0].agent === "codex" ? "codex resume" : "claude --resume"} ${convs[0].id} in ${H.tilde(convs[0].cwd)}`)
         : this.button("agent", `Start ${H.agentChoice()}`, t, () => this.startAgent(repo, s, true), { icon: "terminal" }))
       .when(convs.length > 0, (e) => e.child(this.button("agent-new", `New ${H.agentChoice()}`, t, () => this.startAgent(repo, s, true), { icon: "plus" })))
       .when((snap.stageIds ?? []).includes("logs"), (e) => e.child(this.button("logs", "Logs", t, () => this.tab(`logs · ${H.base(repo)}#${s.id}`, ["har", "env", "logs", String(s.id), "--repo", repo], repo), { icon: "logs" })))
@@ -1067,11 +1078,11 @@ export default class Har extends View {
 
     const convList = v_flex().px(8).gap(2).children(convs.slice(0, this.slotConvMore === s.id ? 60 : 6).map((c) =>
       h_flex().id(`sc-${c.agent}-${c.id}`).px(6).h(24).gap(8).items_center().rounded(6).cursor_pointer().hover((e) => e.bg(t.hover))
-        .tooltip(`${c.title}\n${c.live ? "open in a terminal: click to go to it" : `${c.agent === "codex" ? "codex resume" : "claude --resume"} ${c.id}`}`)
+        .tooltip(`${c.title}\n${c.live ? `open in ${c.liveIn === "claude-desktop" ? "Claude Desktop" : "a terminal"}` : `${c.agent === "codex" ? "codex resume" : "claude --resume"} ${c.id} in ${H.tilde(c.cwd)}`}${c.bound ? "\nlaunched this slot (HAR session binding)" : ""}`)
         .on_click(() => this.resumeInSlot(repo, s, c))
         .child(this.icon("message", c.agent === "codex" ? t.ansi4 : t.ansi3, 11))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(c.title))
-        .when(Boolean(c.live), (e) => e.child(div().text_size(10).text_color(t.working).child("open")))
+        .when(Boolean(c.live), (e) => e.child(div().text_size(10).text_color(t.working).child(c.liveIn === "claude-desktop" ? "open in Desktop" : "open")))
         .child(div().flex_none().text_size(10).text_color(t.dim).child(H.ago(c.at)))))
       .when(convs.length > 6 && this.slotConvMore !== s.id, (e) => e.child(h_flex().id("sc-more").px(6).h(22).gap(6).items_center().rounded(6).cursor_pointer()
         .hover((x) => x.bg(t.hover)).on_click((_e, cx) => { this.slotConvMore = s.id; cx.notify(); })
