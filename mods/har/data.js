@@ -282,28 +282,58 @@ export function store(repo, data) {
 // ---- herdr <-> HAR joins ------------------------------------------------------
 const inside = (cwd, dir) => Boolean(cwd && dir && (cwd === dir || cwd.startsWith(dir + "/")));
 
+// A repo's "· chat" space holds conversations without a slot: never count it as a slot's, even for a slot
+// that runs in the repo folder itself (launched with --no-worktree).
+const isChat = (name) => / · chat$/.test(name ?? "");
+
 /** Agents (herdr) whose pane lives in this slot's worktree. */
 export function slotAgents(slot) {
   if (!slot?.workDir) return [];
   const byPane = new Map(panes().map((p) => [p.pane, p]));
-  return agents().filter((a) => inside(byPane.get(a.pane)?.cwd, slot.workDir));
+  return agents().filter((a) => !isChat(a.space_name) && inside(byPane.get(a.pane)?.cwd, slot.workDir));
 }
 
 /** Agents (herdr) whose pane lives in any of these folders. */
 export function slotAgentsIn(dirs) {
   if (!dirs?.length) return [];
   const byPane = new Map(panes().map((p) => [p.pane, p]));
-  return agents().filter((a) => dirs.some((d) => inside(byPane.get(a.pane)?.cwd, d)));
+  return agents().filter((a) => !isChat(a.space_name) && dirs.some((d) => inside(byPane.get(a.pane)?.cwd, d)));
 }
 
-/** The herdr space already working in this slot's worktree, if any. */
-export function slotSpace(slot) {
-  if (!slot?.workDir) return null;
+/** "har-project#2" or "har-project#2 · telemetry-depth" (and not "har-project#20"). */
+const namedFor = (repo, slot, name) => {
+  const pre = `${base(repo)}#${slot.id}`;
+  return name === pre || (name ?? "").startsWith(`${pre} `);
+};
+
+/** The herdr space for this slot: the one named after it, else the one with a terminal in its worktree, else
+ *  the one made in its worktree. Pass the repo so the name can be matched (slots of different projects share
+ *  ids: har-project#1, otel-hook#1). */
+export function slotSpace(slot, repo) {
+  if (!slot) return null;
+  const all = spaces();
+  if (repo) { const byName = all.find((s) => namedFor(repo, slot, s.name)); if (byName) return byName; }
+  if (!slot.workDir) return null;
   const tabSpace = new Map();
-  for (const s of spaces()) for (const t of s.tabs) tabSpace.set(t.id, s);
-  const pane = panes().find((p) => inside(p.cwd, slot.workDir));
-  if (pane) return tabSpace.get(pane.tab) ?? null;
-  return spaces().find((s) => inside(s.folder, slot.workDir)) ?? null;
+  for (const s of all) for (const t of s.tabs) tabSpace.set(t.id, s);
+  for (const p of panes()) {
+    if (!inside(p.cwd, slot.workDir)) continue;
+    const sp = tabSpace.get(p.tab);
+    if (sp && !isChat(sp.name)) return sp;
+  }
+  return all.find((s) => !isChat(s.name) && inside(s.folder, slot.workDir)) ?? null;
+}
+
+/** Agents (herdr) in one tab. */
+export const agentsInTab = (tab) => agents().filter((a) => a.tab === tab);
+
+/** Which project (and slot) an open space belongs to: { repo, slot } (slot null for a "· chat" space), or null. */
+export function spaceOwner(sp) {
+  for (const r of repos()) {
+    if (sp.name === chatLabel(r)) return { repo: r, slot: null };
+    for (const s of snapshot(r)?.slots ?? []) if (s.active && slotSpace(s, r)?.id === sp.id) return { repo: r, slot: s };
+  }
+  return null;
 }
 
 export const STATUS_RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
@@ -546,7 +576,7 @@ export function syncNames(repo, snap) {
   if (setting("nameSpaces") === false || !snap) return;
   for (const s of snap.slots) {
     if (!s.active) continue;
-    const sp = slotSpace(s);
+    const sp = slotSpace(s, repo);
     if (!sp) continue;
     const want = slotLabel(repo, s);
     const ours = !sp.named || sp.name.startsWith(`${base(repo)}#${s.id}`);

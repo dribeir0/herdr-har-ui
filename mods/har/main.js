@@ -9,7 +9,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { home, props, theme, run, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
+import { home, props, theme, run, spaces, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
 import * as H from "./data.js";
 
 const ICON = (n) => `mods/har/icons/${n}.svg`;
@@ -213,7 +213,7 @@ export default class Har extends View {
   verify(repo, slot, full) {
     const old = H.verifyTerminal(repo, slot.id);
     if (old) run("tab.close", { id: old.tab, confirmed: true });
-    const space = H.slotSpace(slot);
+    const space = H.slotSpace(slot, repo);
     this.live = null;
     this.tab(H.verifyTabName(repo, slot.id), ["har", "env", "verify", String(slot.id), ...(full ? ["--full"] : []), "--repo", repo], repo,
       { space: space?.id, focus: false });
@@ -221,7 +221,7 @@ export default class Har extends View {
   }
 
   openSpace(repo, slot) {
-    const sp = H.slotSpace(slot);
+    const sp = H.slotSpace(slot, repo);
     if (sp) return run("space.select", { id: sp.id });
     if (!slot.workDir) return;
     run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir });
@@ -236,8 +236,7 @@ export default class Har extends View {
     if (live.length) return run("agent.focus", { terminal: (live.find((a) => a.status === "blocked") ?? live[0]).address });
     const last = H.setting("slotClick") === "resume" ? (H.conversations(s.workDir, () => this.cx?.notify()) ?? [])[0] : null;
     if (last) return this.resumeInSlot(repo, s, last);
-    const sp = H.slotSpace(s);
-    if (sp) run("space.select", { id: sp.id });
+    this.openSpace(repo, s);
   }
 
   /** Resumes one of a slot's conversations in its worktree: a new tab in the slot's space, or a new space. */
@@ -246,10 +245,24 @@ export default class Har extends View {
       const live = H.slotAgents(s);
       if (live.length) return run("agent.focus", { terminal: live[0].address });
     }
-    const argv = this.resumeArgv(c), name = c.title.length > 28 ? `${c.title.slice(0, 27)}…` : c.title;
-    const sp = H.slotSpace(s);
+    const argv = this.resumeArgv(c), name = this.convTabName(c);
+    const sp = H.slotSpace(s, repo);
+    if (this.focusConvTab(sp, name)) return;
     if (sp) run("tab.new", { space: sp.id, folder: s.workDir, argv, name, focus: true });
     else run("space.new", { name: H.slotLabel(repo, s), folder: s.workDir, argv });
+  }
+
+  convTabName(c) { return c.title.length > 28 ? `${c.title.slice(0, 27)}…` : c.title; }
+
+  /** A tab of this space already running this conversation (same name, an agent still in it): focus it rather
+   *  than resume the conversation a second time. */
+  focusConvTab(sp, name) {
+    const tab = sp?.tabs.find((tb) => tb.name === name);
+    const agent = tab && H.agentsInTab(tab.id)[0];
+    if (!agent) return false;
+    run("space.select", { id: sp.id });
+    run("agent.focus", { terminal: agent.address });
+    return true;
   }
 
   resumeArgv(c) {
@@ -262,7 +275,7 @@ export default class Har extends View {
     const last = fresh ? null : (H.conversations(slot.workDir, () => this.cx?.notify()) ?? [])[0];
     if (last) return this.resumeInSlot(repo, slot, last);
     const agent = this.agent();
-    const sp = H.slotSpace(slot);
+    const sp = H.slotSpace(slot, repo);
     if (sp) run("tab.new", { space: sp.id, folder: slot.workDir, argv: agent.run, name: agent.name });
     else run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir, argv: agent.run });
   }
@@ -430,6 +443,7 @@ export default class Har extends View {
           .child(this.button("tools-settings", "Set har path…", t, () => openSettings(), { icon: "settings" }))
           .child(this.button("tools-retry", "Retry", t, () => H.resetBins(), { icon: "refresh" })))))
       .children(groups.flatMap((g) => this.projectGroup(g, cur, sel, compact, showFree, q, t)))
+      .children(q ? [] : this.spaceRows(t))
       .when(Boolean(q) && !groups.length && !others.length, (e) => e.child(div().px(8).py(6).text_size(11.5).text_color(t.dim)
         .child(this.found ? "Nothing matches." : "Searching this machine…")))
       .when(others.length > 0, (e) => e.child(div().px(8).pt(10).pb(4).text_size(10).font_semibold().text_color(t.dim).child("OTHER HARNESSES ON THIS MACHINE"))
@@ -443,6 +457,29 @@ export default class Har extends View {
 
     return v_flex().id("har-tree").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.5)
       .child(header).child(this.scroller("har-tree-list", body, t));
+  }
+
+  /** OPEN SPACES: every herdr space, the shown one highlighted, with the project and slot it belongs to, so you
+   *  can see where a click on a slot will take you. A click shows that space. */
+  spaceRows(t) {
+    const list = spaces();
+    if (!list.length) return [];
+    const rows = [h_flex().px(8).pt(12).pb(3).gap(6).items_center()
+      .child(div().text_size(10).font_semibold().text_color(t.dim).child(`OPEN SPACES · ${list.length}`))];
+    for (const sp of list) {
+      const own = H.spaceOwner(sp);
+      const whose = !own ? "not HAR" : own.slot ? `${H.base(own.repo)} #${own.slot.id}` : `${H.base(own.repo)} chat`;
+      const agents = sp.tabs.reduce((n, tb) => n + H.agentsInTab(tb.id).length, 0);
+      rows.push(h_flex().id(`sp-${sp.id}`).px(8).h(26).gap(7).items_center().rounded(7).cursor_pointer()
+        .bg(sp.active ? t.selected : CLEAR).hover((e) => e.bg(sp.active ? t.selected : t.hover))
+        .tooltip(`${sp.name}\n${H.tilde(sp.folder)} · ${sp.tabs.length} tab${sp.tabs.length === 1 ? "" : "s"}, ${agents} agent${agents === 1 ? "" : "s"}${own ? `\nbelongs to ${whose}` : ""}`)
+        .on_click(() => run("space.select", { id: sp.id }))
+        .child(sp.status === "working" ? this.pulse(statusColor(t, sp.status), 6) : this.dot(sp.status ? statusColor(t, sp.status) : t.border, 6))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(sp.active ? t.foreground : t.muted).child(sp.name))
+        .child(div().flex_none().text_size(10).text_color(own ? t.muted : t.dim).child(whose))
+        .child(div().flex_none().w(18).text_size(10).text_color(t.dim).child(String(sp.tabs.length))));
+    }
+    return rows;
   }
 
   projectGroup({ r, snap, slots }, cur, sel, compact, showFree, q, t) {
@@ -522,8 +559,9 @@ export default class Har extends View {
   /** Reopens a conversation in the project folder, as a tab of its "· chat" space. */
   resumeConversation(repo, c) {
     const argv = this.resumeArgv(c);
-    const name = c.title.length > 28 ? `${c.title.slice(0, 27)}…` : c.title;
+    const name = this.convTabName(c);
     const sp = H.chatSpace(repo);
+    if (this.focusConvTab(sp, name)) return;
     if (sp) run("tab.new", { space: sp.id, folder: repo, argv, name, focus: true });
     else run("space.new", { name: H.chatLabel(repo), folder: repo, argv });
   }
@@ -991,7 +1029,7 @@ export default class Har extends View {
     const actions = h_flex().px(14).py(10).gap(6).flex_wrap().border_b(1).border_color(t.border)
       .child(this.button("v-full", "Verify --full", t, () => this.verify(repo, s, true), { primary: true, icon: "play" }))
       .child(this.button("v-quick", "Verify", t, () => this.verify(repo, s, false), { icon: "check" }))
-      .child(this.button("space", H.slotSpace(s) ? "Go to space" : "Open space", t, () => this.openSpace(repo, s), { icon: "folder" }))
+      .child(this.button("space", H.slotSpace(s, repo) ? "Go to space" : "Open space", t, () => this.openSpace(repo, s), { icon: "folder" }))
       .child(convs.length
         ? this.button("agent", `Resume · ${convs[0].title.length > 24 ? `${convs[0].title.slice(0, 23)}…` : convs[0].title}`, t, () => this.startAgent(repo, s), { icon: "terminal" })
             .tooltip(`${convs[0].agent === "codex" ? "codex resume" : "claude --resume"} ${convs[0].id} in this worktree`)

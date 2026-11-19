@@ -94,6 +94,12 @@ The header button (list / cards icon) switches to detailed cards. Each card show
 
 ![Detailed slot cards](screenshots/detail-view.png)
 
+### Open spaces
+
+Under the projects, **OPEN SPACES** lists every herdr space: its agent status, its name, which project and slot it belongs to (`sentry #1`, `har-project chat`, or *not HAR*) and its tab count. The shown space is highlighted; click one to go there.
+
+A slot's space is the one named after it (`har-project#2`, `har-project#2 · telemetry-depth`), else the one with a terminal in the slot's worktree, else the one made in that worktree. A project's `· chat` space never counts as a slot's, even for a slot that runs in the project folder itself (`--no-worktree`).
+
 ## Search
 
 The box under the header matches, without regard to case:
@@ -251,9 +257,10 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
 
 Each slot remembers its Claude Code and Codex conversations: they're the ones that ran in its worktree.
 
-- **Clicking a slot** in the tree goes to its agent when one is running there. When none is, it resumes the slot's most recent conversation (`claude --resume <id>` or `codex resume <id>`) in the slot's space. A slot with no conversation just shows its space. **Settings → Slot click → Select** turns the resume off.
+- **Clicking a slot** in the tree goes to its agent when one is running there. When none is, it resumes the slot's most recent conversation (`claude --resume <id>` or `codex resume <id>`) in the slot's space. A slot with no conversation shows its space, and opens one in its worktree when there isn't one yet. **Settings → Slot click → Select** turns the resume off.
 - **Resume · <title>** in the slot view does the same; **New claude** (or your agent) starts a fresh conversation next to it.
 - **Conversations** in the slot view lists all of them, newest first (6, then *Show more*). Click one to resume it. A conversation marked **open** is still running in a terminal: clicking it goes there instead of starting a second copy.
+- **A conversation that's already open in a tab** is focused instead of resumed again, from the slot view and from a project's conversation list.
 
 Several conversations in one worktree are normal: the newest is the one a click resumes, and the others stay a click away in the list.
 ## Status bar
