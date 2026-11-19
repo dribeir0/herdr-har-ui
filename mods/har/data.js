@@ -329,34 +329,47 @@ const namedFor = (repo, slot, name) => {
   return name === pre || (name ?? "").startsWith(`${pre} `);
 };
 
+/** spaces() and panes() copy the whole window state: read them once and pass this along when looking up many. */
+export function spaceIndex() {
+  const all = spaces(), ps = panes(), tabSpace = new Map();
+  for (const sp of all) for (const t of sp.tabs) tabSpace.set(t.id, sp);
+  return { all, ps, tabSpace };
+}
+
 /** The herdr space for this slot: the one named after it, else the one with a terminal in its worktree, else
  *  the one made in its worktree. Pass the repo so the name can be matched (slots of different projects share
  *  ids: har-project#1, otel-hook#1). */
-export function slotSpace(slot, repo) {
+export function slotSpace(slot, repo, ix = spaceIndex()) {
   if (!slot) return null;
-  const all = spaces();
-  if (repo) { const byName = all.find((s) => namedFor(repo, slot, s.name)); if (byName) return byName; }
+  if (repo) { const byName = ix.all.find((s) => namedFor(repo, slot, s.name)); if (byName) return byName; }
   if (!slot.workDir) return null;
-  const tabSpace = new Map();
-  for (const s of all) for (const t of s.tabs) tabSpace.set(t.id, s);
-  for (const p of panes()) {
+  for (const p of ix.ps) {
     if (!inside(p.cwd, slot.workDir)) continue;
-    const sp = tabSpace.get(p.tab);
+    const sp = ix.tabSpace.get(p.tab);
     if (sp && !isChat(sp.name)) return sp;
   }
-  return all.find((s) => !isChat(s.name) && inside(s.folder, slot.workDir)) ?? null;
+  return ix.all.find((s) => !isChat(s.name) && inside(s.folder, slot.workDir)) ?? null;
 }
 
 /** Agents (herdr) in one tab. */
+/** Every herdr agent (one read of the window state). */
+export const allAgents = () => agents();
 export const agentsInTab = (tab) => agents().filter((a) => a.tab === tab);
 
-/** Which project (and slot) an open space belongs to: { repo, slot } (slot null for a "· chat" space), or null. */
-export function spaceOwner(sp) {
+/** Which project (and slot) each open space belongs to: Map space id → { repo, slot } (slot null for a
+ *  "· chat" space). One pass over the window state, for the OPEN SPACES list. */
+export function spaceOwners(ix = spaceIndex()) {
+  const own = new Map();
   for (const r of repos()) {
-    if (sp.name === chatLabel(r)) return { repo: r, slot: null };
-    for (const s of snapshot(r)?.slots ?? []) if (s.active && slotSpace(s, r)?.id === sp.id) return { repo: r, slot: s };
+    const chat = ix.all.find((sp) => sp.name === chatLabel(r));
+    if (chat && !own.has(chat.id)) own.set(chat.id, { repo: r, slot: null });
+    for (const s of snapshot(r)?.slots ?? []) {
+      if (!s.active) continue;
+      const sp = slotSpace(s, r, ix);
+      if (sp && !own.has(sp.id)) own.set(sp.id, { repo: r, slot: s });
+    }
   }
-  return null;
+  return own;
 }
 
 export const STATUS_RANK = { blocked: 4, done: 3, working: 2, idle: 1 };

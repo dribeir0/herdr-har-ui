@@ -9,7 +9,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { home, props, theme, run, spaces, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
+import { home, props, theme, run, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
 import * as H from "./data.js";
 
 const ICON = (n) => `mods/har/icons/${n}.svg`;
@@ -473,14 +473,17 @@ export default class Har extends View {
   /** OPEN SPACES: every herdr space, the shown one highlighted, with the project and slot it belongs to, so you
    *  can see where a click on a slot will take you. A click shows that space. */
   spaceRows(t) {
-    const list = spaces();
+    const ix = H.spaceIndex(), list = ix.all;
     if (!list.length) return [];
+    const owners = H.spaceOwners(ix);
+    const perTab = new Map();
+    for (const a of H.allAgents()) perTab.set(a.tab, (perTab.get(a.tab) ?? 0) + 1);
     const rows = [h_flex().px(8).pt(12).pb(3).gap(6).items_center()
       .child(div().text_size(10).font_semibold().text_color(t.dim).child(`OPEN SPACES · ${list.length}`))];
     for (const sp of list) {
-      const own = H.spaceOwner(sp);
+      const own = owners.get(sp.id) ?? null;
       const whose = !own ? "not HAR" : own.slot ? `${H.base(own.repo)} #${own.slot.id}` : `${H.base(own.repo)} chat`;
-      const agents = sp.tabs.reduce((n, tb) => n + H.agentsInTab(tb.id).length, 0);
+      const agents = sp.tabs.reduce((n, tb) => n + (perTab.get(tb.id) ?? 0), 0);
       rows.push(h_flex().id(`sp-${sp.id}`).px(8).h(26).gap(7).items_center().rounded(7).cursor_pointer()
         .bg(sp.active ? t.selected : CLEAR).hover((e) => e.bg(sp.active ? t.selected : t.hover))
         .tooltip(`${sp.name}\n${H.tilde(sp.folder)} · ${sp.tabs.length} tab${sp.tabs.length === 1 ? "" : "s"}, ${agents} agent${agents === 1 ? "" : "s"}${own ? `\nbelongs to ${whose}` : ""}`)
