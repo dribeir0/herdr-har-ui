@@ -15,6 +15,7 @@ import * as H from "./data.js";
 const ICON = (n) => `mods/har/icons/${n}.svg`;
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const POLL_MS = 10000;
+const SPACES_KEY = "__open-spaces__";   // its open/closed state lives with the projects' (har.expanded)
 const CLEAR = "#00000000";
 const NOT_AGENT = /browser/i;   // programs herdr lists next to agents that can't take a prompt
 
@@ -399,6 +400,11 @@ export default class Har extends View {
 
   // ---- views -----------------------------------------------------------------
   render(cx) {
+    H.frameStart();
+    try { return this.renderView(cx); } finally { H.frameEnd(); }
+  }
+
+  renderView(cx) {
     const t = theme();
     if (this.view === "status") return this.renderStatus(t, cx);
     if (this.view === "detail") return this.renderDetail(t, cx);
@@ -453,8 +459,8 @@ export default class Har extends View {
         .child(h_flex().gap(6)
           .child(this.button("tools-settings", "Set har path…", t, () => openSettings(), { icon: "settings" }))
           .child(this.button("tools-retry", "Retry", t, () => H.resetBins(), { icon: "refresh" })))))
-      .children(groups.flatMap((g) => this.projectGroup(g, cur, sel, compact, showFree, q, t)))
       .children(q ? [] : this.spaceRows(t))
+      .children(groups.flatMap((g) => this.projectGroup(g, cur, sel, compact, showFree, q, t)))
       .when(Boolean(q) && !groups.length && !others.length, (e) => e.child(div().px(8).py(6).text_size(11.5).text_color(t.dim)
         .child(this.found ? "Nothing matches." : "Searching this machine…")))
       .when(others.length > 0, (e) => e.child(div().px(8).pt(10).pb(4).text_size(10).font_semibold().text_color(t.dim).child("OTHER HARNESSES ON THIS MACHINE"))
@@ -478,8 +484,13 @@ export default class Har extends View {
     const owners = H.spaceOwners(ix);
     const perTab = new Map();
     for (const a of H.allAgents()) perTab.set(a.tab, (perTab.get(a.tab) ?? 0) + 1);
-    const rows = [h_flex().px(8).pt(12).pb(3).gap(6).items_center()
+    const open = H.expanded(SPACES_KEY);
+    const rows = [h_flex().id("sp-head").px(6).pt(4).pb(3).gap(4).items_center().rounded(6).cursor_pointer().hover((e) => e.bg(t.hover))
+      .tooltip(open ? "Hide open spaces" : "Show open spaces")
+      .on_click((_e, cx) => { H.toggleExpanded(SPACES_KEY); cx.notify(); })
+      .child(this.icon(open ? "chevron-down" : "chevron-right", t.dim, 12))
       .child(div().text_size(10).font_semibold().text_color(t.dim).child(`OPEN SPACES · ${list.length}`))];
+    if (!open) return [...rows, div().h(6)];
     for (const sp of list) {
       const own = owners.get(sp.id) ?? null;
       const whose = !own ? "not HAR" : own.slot ? `${H.base(own.repo)} #${own.slot.id}` : `${H.base(own.repo)} chat`;
@@ -493,6 +504,7 @@ export default class Har extends View {
         .child(div().flex_none().text_size(10).text_color(own ? t.muted : t.dim).child(whose))
         .child(div().flex_none().w(18).text_size(10).text_color(t.dim).child(String(sp.tabs.length))));
     }
+    rows.push(div().h(8).border_b(1).border_color(t.border).mb(6));
     return rows;
   }
 

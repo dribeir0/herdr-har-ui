@@ -1,7 +1,21 @@
 // HAR data for the herdr panels: everything comes from the `har` CLI
 // (`har env status --json`, `har env runs list --json`) and the harness's own
 // `.har/stages.json`, so Mission Control does not need to be running.
-import { exec, run, readTextFile, writeTextFile, hc, panes, spaces, agents, shared, setShared, home, appHome, focused } from "herdr";
+import { exec, run, readTextFile, writeTextFile, hc, panes as panesNow, spaces as spacesNow, agents as agentsNow,
+  shared as sharedNow, setShared as setSharedNow, home, appHome, focused } from "herdr";
+
+// Each read of the window state (spaces, panes, agents) or of a shared value copies it out of the app. A render
+// asks for them per slot and per tab, which with many slots and spaces outran herdr's render budget ("This view
+// could not be re-rendered: interrupted"). Between frameStart() and frameEnd() (one render) each is read once.
+let frame = null;
+export const frameStart = () => { frame = new Map(); };
+export const frameEnd = () => { frame = null; };
+const memo = (k, read) => { if (!frame) return read(); if (!frame.has(k)) frame.set(k, read()); return frame.get(k); };
+const spaces = () => memo("spaces", spacesNow);
+const panes = () => memo("panes", panesNow);
+const agents = () => memo("agents", agentsNow);
+const shared = (k) => memo(`shared:${k}`, () => sharedNow(k));
+const setShared = (k, v) => { frame?.delete(`shared:${k}`); return setSharedNow(k, v); };
 
 export const MC_URL = "http://localhost:3847";
 const KEY = { repos: "har.repos", repo: "har.repo", slot: "har.slot", snap: "har.snapshot", tick: "har.refresh" };
