@@ -7,7 +7,7 @@ A [herdr](https://herdr.dev) layout for [HAR](https://github.com/os-factory/har)
 - **Left:** every HAR project, with its slots listed underneath, one line per slot.
 - **Right:** the selected project's overview (usage, pipeline health, factory lines, work units) or the selected slot.
 - **Bottom:** a status bar for the selected project.
-- herdr's own pieces stay: its sidebar footer (**Settings**, **Add machine**), the tab bar with Files and Changes, its space menu (right-click a space in Open spaces) and the command palette (`Ctrl+Shift+P`, hinted in the status bar).
+- herdr's own pieces stay: its sidebar footer (**Settings**, **Add machine**), the tab bar, its space menu (right-click a space in Open spaces) and the command palette (`Ctrl+Shift+P`, hinted in the status bar).
 
 ## Features
 
@@ -17,7 +17,7 @@ A [herdr](https://herdr.dev) layout for [HAR](https://github.com/os-factory/har)
 - Each slot is one line: a status dot, `#id`, work unit, PR number, `↑` unpushed commits, `●` uncommitted changes, `stale`, and the last verify result.
 - Under the slots, the project's Claude Code and Codex conversations that didn't run in a slot: 4 at first, **Load more** for the rest. Click one to resume it.
 - One search box covers projects, slots, work units, branches, PRs, commits and agent prompts. It also finds HAR projects on this machine that you haven't added yet.
-- The right panel can be hidden with the panel icon in the status bar. Gaps between panes are off by default (Settings → Spacing).
+- The right panel switches between **Mission Control** (the HAR panel), **Files** and **Changes** with the buttons at the right of the tab row. Click the active button to hide it. Gaps between panes are off by default (Settings → Spacing).
 - A header button switches to detailed cards, which show the branch, ahead/behind, PR state and a strip with one cell per verification stage.
 
 ### New discussion
@@ -110,6 +110,7 @@ layouts/har.json           the herdr layout (sidebar tree, work area, right pane
 mods/har/main.js           views: tree, detail, status, free (dialog), settings
 mods/har/data.js           data layer: har CLI, git, gh, Mission Control
 mods/har/lanes.js          commit-graph lane layout, from herdr-git-graph (MIT, Rabeeh T A)
+mods/har-tabs/main.js      the tab row: herdr's tabs mod with the Mission Control | Files | Changes buttons
 mods/har/bin/              launch-agent.sh (free → launch → agent), collect.mjs (git + work units), worktree.mjs (a slot's files and commits), conversations.mjs, find-tools.sh (finds har/node/gh),
                            install-browser.sh, install-chat.sh
 mods/har/patches/          claude-chat-linux.patch (herdr-claude-chat on Linux and under wrappers)

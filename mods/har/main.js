@@ -9,7 +9,7 @@
 
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { home, props, theme, run, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand, keys, window as appWindow } from "herdr";
+import { home, props, theme, run, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand, keys, layout, window as appWindow } from "herdr";
 import * as H from "./data.js";
 import { layoutLanes } from "./lanes.js";
 
@@ -21,6 +21,23 @@ const mono = () => settings().font_family ?? "JetBrains Mono";   // the terminal
 const ROW = 24, LANE = 12, LANE_PAD = 6;   // the worktree graph: row height, lane width, left padding
 const CLEAR = "#00000000";
 const NOT_AGENT = /browser/i;   // programs herdr lists next to agents that can't take a prompt
+
+// The HAR panel is the "har-panel" child of the right panel's stack, next to Files and Changes
+// (the tab row's Mission Control | Files | Changes | Browser buttons, mods/har-tabs).
+function layoutNode(n, id) {
+  if (n?.id === id) return n;
+  for (const c of n?.children ?? []) { const f = layoutNode(c, id); if (f) return f; }
+  return null;
+}
+function showHarPanel() {
+  run("layout.select", { stack: "panel-body", child: "har-panel" });
+  run("layout.show", { id: "panel" });
+}
+function toggleHarPanel() {
+  const L = layout(), panel = layoutNode(L, "panel"), body = layoutNode(L, "panel-body");
+  if (panel && !panel.hidden && body?.active === "har-panel") run("layout.hide", { id: "panel" });
+  else showHarPanel();
+}
 
 function statusColor(t, s) {
   return { blocked: t.blocked, done: t.done, working: t.working, idle: t.idle, pass: t.ansi2, fail: t.ansi1, running: t.working, skipped: t.dim }[s] ?? t.dim;
@@ -131,7 +148,7 @@ export default class Har extends View {
     if (c === "chat") return repo && this.chatInRepo(repo);
     if (c === "free") return repo && this.freeMerged(repo);
     if (c === "settings") return openSettings();
-    if (c === "toggle-panel") return run("layout.toggle", { id: "har-panel" });
+    if (c === "toggle-panel") return toggleHarPanel();
     if (c === "find-tools") return H.resetBins();   // look for har/node/gh again
     if (c === "toggle-view") return H.setSetting("slotView", H.setting("slotView") === "compact" ? "detailed" : "compact");
     if (c === "choose") return repo && openOverlay({ mod: "har", kind: "dialog", width: 640, height: 0.82, props: { view: "free", repo } });
@@ -246,7 +263,7 @@ export default class Har extends View {
   /** Clicking a slot: its agent if one is running there, else (Settings → Slot click → Resume) its most recent
    *  conversation, resumed in the slot's space. A slot with no conversation shows (or opens) its space. */
   openSlot(repo, s) {
-    H.selectRepo(repo); H.selectSlot(s.id); run("layout.show", { id: "har-panel" });
+    H.selectRepo(repo); H.selectSlot(s.id); showHarPanel();
     if (!s.active) return;
     const live = H.slotAgents(s);
     if (live.length) return run("agent.focus", { terminal: (live.find((a) => a.status === "blocked") ?? live[0]).address });
@@ -1169,19 +1186,21 @@ export default class Har extends View {
       .child(this.dot(hintColor[h.level] ?? t.dim, 6))
       .child(div().flex_1().min_w(0).text_size(11.5).text_color(hintColor[h.level] ?? t.muted).child(h.text))
       .when(Boolean(h.action), (e) => e.child(this.button(`hint-${i}`, ACTION[h.action], t, () => this.hintAction(h.action, repo, s, h), { h: 22 })))));
+    // Order: what the slot's code does (pipeline), what it costs (usage), whether it can run (readiness),
+    // where it stands (git & PR), then the rest.
     return [
       header, actions,
-      ...(hs.length ? [this.section("Next steps", t), hintBlock] : []),
-      this.section("Git & PR", t), gitBlock,
-      ...this.worktreeBlock(s, t),
+      this.section("Verification pipeline", t, pipeHead), pipeline,
       this.section("Usage · OTel", t, snap.usage?.error ? div().text_size(10.5).text_color(t.blocked).child(snap.usage.error) : null),
       ...(snap.usage?.error ? [] : [this.usageBlock(f.usage, t, { label: "This slot", empty: "No OTel usage attributed to this slot yet." })]),
+      ...(warnings.length ? [this.section("Readiness", t), v_flex().px(14).gap(4).children(warnings.map((w) =>
+        div().text_size(11).text_color(t.blocked).child(`⚠ ${w}`)))] : []),
+      this.section("Git & PR", t), gitBlock,
+      ...(hs.length ? [this.section("Next steps", t), hintBlock] : []),
+      ...this.worktreeBlock(s, t),
       ...(previews ? [this.section("Previews", t), previews] : []),
       this.section(`Agents in this slot · ${agents.length}`, t), agentList,
       ...(convs.length ? [this.section(`Conversations · ${convs.length}`, t), convList] : []),
-      this.section("Verification pipeline", t, pipeHead), pipeline,
-      ...(warnings.length ? [this.section("Readiness", t), v_flex().px(14).gap(4).children(warnings.map((w) =>
-        div().text_size(11).text_color(t.blocked).child(`⚠ ${w}`)))] : []),
       this.section(`Runs · slot ${s.id}`, t), this.runList(repo, runs, t, false),
     ];
   }
@@ -1440,9 +1459,7 @@ export default class Har extends View {
       .child(div().id("st-mc").cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
         .on_click(() => repo && H.openMissionControl(repo, H.currentSlot())).child("Mission Control ↗"))
       .child(div().id("st-palette").cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
-        .tooltip("Every Herdr and HAR command").on_click(() => run("app.palette")).child(paletteHint()))
-      .child(div().id("st-panel").cursor_pointer().tooltip("Show / hide the HAR panel (har.toggle-panel)")
-        .on_click(() => run("layout.toggle", { id: "har-panel" })).child(this.icon("panel-right", t.dim, 14)));
+        .tooltip("Every Herdr and HAR command").on_click(() => run("app.palette")).child(paletteHint()));
   }
 }
 

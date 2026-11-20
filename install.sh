@@ -36,6 +36,7 @@ place() { # src dst
   if [ "$mode" = link ]; then ln -s "$1" "$2"; else cp -R "$1" "$2"; fi
 }
 place "$here/mods/har" "$dest/mods/har"
+place "$here/mods/har-tabs" "$dest/mods/har-tabs"
 place "$here/layouts/har.json" "$dest/layouts/har.json"
 place "$here/layouts/har.svg" "$dest/layouts/har.svg"
 chmod +x "$dest/mods/har/bin/"*.sh
@@ -71,7 +72,7 @@ PY
 fi
 
 if command -v herdr-app >/dev/null; then
-  herdr-app check "$dest/mods/har" >/dev/null && echo "✓ mod check passed"
+  herdr-app check "$dest/mods/har" >/dev/null && herdr-app check "$dest/mods/har-tabs" >/dev/null && echo "✓ mod check passed"
   herdr-app do layout.switch --name har >/dev/null 2>&1 && echo "✓ switched herdr to the HAR layout" || echo "→ in herdr: ctrl-shift-l, pick HAR"
 fi
 echo "installed ($mode) into $dest"
