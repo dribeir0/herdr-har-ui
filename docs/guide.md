@@ -96,7 +96,7 @@ The header button (list / cards icon) switches to detailed cards. Each card show
 
 ### Open spaces
 
-At the top of the tree, **OPEN SPACES** lists every herdr space: its agent status, its name, which project and slot it belongs to (`sentry #1`, `har-project chat`, or *not HAR*) and its tab count. The shown space is highlighted; click one to go there. Hover one for a **×** that closes it (herdr asks first, since its terminals end). Click the heading to collapse or expand the list; it stays that way.
+At the top of the tree, **OPEN SPACES** lists every herdr space: its agent status, its name, which project and slot it belongs to (`sentry #1`, `har-project chat`, or *not HAR*) and its tab count. The shown space is highlighted; click one to go there. Hover one for a **×** that closes it (herdr asks first, since its terminals end). Right-click one for herdr's own space menu: **Rename**, **New / Open / Remove worktree** and **Close**. Click the heading to collapse or expand the list; it stays that way.
 
 A slot's space is the one named after it (`har-project#2`, `har-project#2 · telemetry-depth`), else the one with a terminal in the slot's worktree, else the one made in that worktree. A project's `· chat` space never counts as a slot's, even for a slot that runs in the project folder itself (`--no-worktree`).
 
@@ -281,13 +281,13 @@ These don't appear in the project's own Conversations list.
 Several conversations in one worktree are normal: the newest is the one a click resumes, and the others stay a click away in the list.
 ## Status bar
 
-The selected project and its profile, slots in use, agents working, agents needing you, failing verifies, stale slots, the project's OTel cost and tokens, when the data was last refreshed, and a Mission Control link.
+The selected project and its profile, slots in use, agents working, agents needing you, failing verifies, stale slots, the project's OTel cost and tokens, when the data was last refreshed, and a Mission Control link. Like herdr's own status bar, it also shows the shown space's branch, its machine when it isn't this computer, and the command palette key (**Ctrl+Shift+P commands**; click it to open the palette).
 
 The panel icon at the far right hides or shows the right panel (also `har.toggle-panel`). Clicking a slot in the tree shows the panel again. herdr remembers whether it's shown across restarts.
 
 ## Settings
 
-Open them with the gear in the tree header, or `har.settings`.
+Open them with the gear in the tree header (**HAR settings**), or `har.settings`. herdr's own settings (look, machines, alerts, updates, privacy) are under **Settings** at the bottom of the sidebar, or `Ctrl+,`; **Add machine** sits next to it. That footer is herdr's own, so it shows herdr's update dot too.
 
 | Setting | Values |
 |---|---|

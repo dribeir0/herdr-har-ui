@@ -7,6 +7,7 @@ A [herdr](https://herdr.dev) layout for [HAR](https://github.com/os-factory/har)
 - **Left:** every HAR project, with its slots listed underneath, one line per slot.
 - **Right:** the selected project's overview (usage, pipeline health, factory lines, work units) or the selected slot.
 - **Bottom:** a status bar for the selected project.
+- herdr's own pieces stay: its sidebar footer (**Settings**, **Add machine**), the tab bar with Files and Changes, its space menu (right-click a space in Open spaces) and the command palette (`Ctrl+Shift+P`, hinted in the status bar).
 
 ## Features
 

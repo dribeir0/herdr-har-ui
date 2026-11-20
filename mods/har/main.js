@@ -9,7 +9,7 @@
 
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { home, props, theme, run, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
+import { home, props, theme, run, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand, keys, window as appWindow } from "herdr";
 import * as H from "./data.js";
 import { layoutLanes } from "./lanes.js";
 
@@ -464,7 +464,7 @@ export default class Har extends View {
         .child(this.busy?.has(H.currentRepo()) ? div().px(4).text_size(12).text_color(t.dim).frames(SPIN, 90) : div())
         .child(iconBtn("tv-toggle", compact ? "rows" : "list", compact ? "Detailed slots" : "Compact slots",
           () => H.setSetting("slotView", compact ? "detailed" : "compact"), false))
-        .child(iconBtn("tv-settings", "settings", "Settings", () => openSettings(), false))
+        .child(iconBtn("tv-settings", "settings", "HAR settings", () => openSettings(), false))
         .child(iconBtn("tv-add", "plus", "Add a project folder", (cx) => cx.spawn(async (cx) => { this.addRepo(await pickFolder({ prompt: "Add harness" })); cx.notify(); }), false)))
       .when(Boolean(this.search), (e) => e.child(Input.new(this.search).h(28).px(8).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(12).text_color(t.foreground)));
 
@@ -513,8 +513,10 @@ export default class Har extends View {
       const agents = sp.tabs.reduce((n, tb) => n + (perTab.get(tb.id) ?? 0), 0);
       rows.push(h_flex().id(`sp-${sp.id}`).px(8).h(26).gap(7).items_center().rounded(7).cursor_pointer()
         .bg(sp.active ? t.selected : CLEAR).hover((e) => e.bg(sp.active ? t.selected : t.hover))
-        .tooltip(`${sp.name}\n${H.tilde(sp.folder)} · ${sp.tabs.length} tab${sp.tabs.length === 1 ? "" : "s"}, ${agents} agent${agents === 1 ? "" : "s"}${own ? `\nbelongs to ${whose}` : ""}`)
+        .tooltip(`${sp.name}\n${H.tilde(sp.folder)} · ${sp.tabs.length} tab${sp.tabs.length === 1 ? "" : "s"}, ${agents} agent${agents === 1 ? "" : "s"}${own ? `\nbelongs to ${whose}` : ""}\nright-click: rename, worktree, close`)
         .on_click(() => run("space.select", { id: sp.id }))
+        // Herdr's own space menu: Rename, New / Open / Remove worktree, Close
+        .on_mouse_down("right", () => openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: sp.id } } }))
         .on_hover((on, cx) => { if (on) this.hoverSpace = sp.id; else if (this.hoverSpace === sp.id) this.hoverSpace = null; cx.notify(); })
         .child(sp.status === "working" ? this.pulse(statusColor(t, sp.status), 6) : this.dot(sp.status ? statusColor(t, sp.status) : t.border, 6))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(sp.active ? t.foreground : t.muted).child(sp.name))
@@ -1420,6 +1422,7 @@ export default class Har extends View {
     const blocked = agents.filter((a) => a.status === "blocked").length, working = agents.filter((a) => a.status === "working").length;
     const ru = snap && !snap.usage?.error ? H.repoUsage(snap).all : null;
     const item = (icon, text, color) => h_flex().gap(5).items_center().child(this.icon(icon, color ?? t.dim, 12)).child(div().text_color(color ?? t.muted).child(text));
+    const space = H.spaceIndex().all.find((s) => s.active);
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.5).text_color(t.muted)
       .child(item("har", repo ? `${H.base(repo)} · ${snap?.profile ?? "…"}` : "no harness", t.accent))
       .child(item("layers", `${active.length}/${slots.length} slots`))
@@ -1430,12 +1433,27 @@ export default class Har extends View {
       .when(Boolean(ru?.sessions), (e) => e.child(div().text_color(t.muted).tooltip("OTel usage recorded for this repository (Mission Control)")
         .child(`${H.money(ru.cost)} · ${H.tokens(ru.tokens)} tokens`)))
       .child(div().flex_1())
+      // the shown space: its machine when it isn't this one, its branch (as Herdr's own status bar has them)
+      .when(Boolean(space?.machine), (e) => e.child(item("server", space.machine)))
+      .when(Boolean(space?.branch), (e) => e.child(item("branch", space.branch)))
       .when(Boolean(snap?.at), (e) => e.child(div().text_color(t.dim).child(`updated ${H.ago(new Date(snap.at).toISOString())}`)))
       .child(div().id("st-mc").cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
         .on_click(() => repo && H.openMissionControl(repo, H.currentSlot())).child("Mission Control ↗"))
+      .child(div().id("st-palette").cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
+        .tooltip("Every Herdr and HAR command").on_click(() => run("app.palette")).child(paletteHint()))
       .child(div().id("st-panel").cursor_pointer().tooltip("Show / hide the HAR panel (har.toggle-panel)")
         .on_click(() => run("layout.toggle", { id: "har-panel" })).child(this.icon("panel-right", t.dim, 14)));
   }
+}
+
+// The palette key as keys.json binds it (as Herdr's status bar shows it), or just "commands" when unbound.
+function paletteHint() {
+  const mac = appWindow()?.platform === "macos";
+  const mod = { cmd: mac ? "⌘" : "Ctrl+", ctrl: mac ? "⌃" : "Ctrl+", shift: mac ? "⇧" : "Shift+", alt: mac ? "⌥" : "Alt+", option: mac ? "⌥" : "Alt+" };
+  const b = keys().find((k) => k.section === "global" && k.action === "app.palette");
+  const parts = b && b.keys.endsWith("--") ? [...b.keys.slice(0, -2).split("-"), "-"] : b?.keys.split("-");
+  const key = parts && parts.map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("");
+  return key ? `${key}  commands` : "commands";
 }
 
 function openSettings() { return openOverlay({ mod: "har", kind: "dialog", width: 480, height: 800, props: { view: "settings" } }); }
