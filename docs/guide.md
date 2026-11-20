@@ -235,6 +235,13 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
   - **Logs:** only shown when the harness defines a `logs` stage.
   - **Mission Control:** opens this slot's page in Mission Control.
   - **Complete… / Teardown…:** ask before running.
+
+The sections, top to bottom:
+
+- **Verification pipeline:** each stage with ✓ / ✗ / skipped / running, a duration bar and its time. "full only" marks stages a quick verify skips. **show** jumps to the verify tab.
+- **Usage · OTel:** this slot's cost, tokens and models.
+- **Readiness:** warnings from `har env status`, such as untracked paths that won't be in the worktree.
+- **Git & PR:** PR (click to open), ahead/behind, unpushed, clean/uncommitted, merged into base, PR title, last commit, remote branches, and the [freeing verdict](#freeing-a-slot) with its reasons.
 - **Next steps:** hints worked out from the slot's state, each with a button where there's something to click:
   - an agent waiting for you → **Go to agent**;
   - PR merged, or nothing committed for days → **Free…** (teardown, branch kept);
@@ -244,7 +251,6 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
   - not verified with `--full` since the last change → **Verify --full**;
   - behind the base branch → a reminder to rebase;
   - harness bypass reported by `har`.
-- **Git & PR:** PR (click to open), ahead/behind, unpushed, clean/uncommitted, merged into base, PR title, last commit, remote branches, and the [freeing verdict](#freeing-a-slot) with its reasons.
 - **Worktree:** whether the worktree is **clean** or **dirty** (and how many files), its branch, how far ahead/behind it is against the base branch and against its upstream (or *not pushed*). Then:
   - buttons: **Stage all** (`git add -A`), **Unstage all** (`git reset`), **Commit…** (a message; it commits what's staged, or everything when nothing is, with a box to stage everything first) and **Branch…** (a new branch from HEAD);
   - the changed files, with their status (M, A, D, R, U for untracked, conflict), a dot for staged (filled) or partly staged, and line counts. Click one to page its diff in a tab of the slot's space. Hover one for:
@@ -256,11 +262,8 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
   New branches are created, not checked out: the slot stays on its own branch, which HAR tracks. Commits run the repo's hooks, HAR's commit gate included; if one refuses, the dialog shows why.
 
   It's read with `git` in the worktree every 5 seconds while the slot is shown. The lane layout is [herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph)'s (MIT, Rabeeh T A).
-- **Usage · OTel:** this slot's cost, tokens and models.
 - **Previews:** the slot's preview URLs. Click to open.
 - **Agents in this slot:** herdr agents whose terminal is in the worktree. Click to focus one.
-- **Verification pipeline:** each stage with ✓ / ✗ / skipped / running, a duration bar and its time. "full only" marks stages a quick verify skips. **show** jumps to the verify tab.
-- **Readiness:** warnings from `har env status`, such as untracked paths that won't be in the worktree.
 - **Runs:** the slot's last 6 runs. Click one to open `har env runs get <id>` in a tab.
 
 
@@ -283,7 +286,7 @@ Several conversations in one worktree are normal: the newest is the one a click 
 
 The selected project and its profile, slots in use, agents working, agents needing you, failing verifies, stale slots, the project's OTel cost and tokens, when the data was last refreshed, and a Mission Control link. Like herdr's own status bar, it also shows the shown space's branch, its machine when it isn't this computer, and the command palette key (**Ctrl+Shift+P commands**; click it to open the palette).
 
-The panel icon at the far right hides or shows the right panel (also `har.toggle-panel`). Clicking a slot in the tree shows the panel again. herdr remembers whether it's shown across restarts.
+The right panel holds three views, picked with the buttons at the right of the tab row: **Mission Control** (the HAR panel described above), **Files** and **Changes** (herdr's). Clicking the active one hides the panel; herdr remembers the choice per space. `har.toggle-panel` hides or shows the HAR panel from the keyboard or palette. Clicking a slot in the tree shows the panel again. herdr remembers whether it's shown across restarts.
 
 ## Settings
 
@@ -408,7 +411,8 @@ It prints `har=`, `node=`, `gh=`, `how=` (which step found them) and a `tried=` 
 `layouts/har.json` is a normal herdr layout:
 
 - `har-tree`: the sidebar (`"view": "tree"`). Its `props.repos` can list the first projects to show, e.g. `["~/code/app", "~/code/app/web"]`. Leave it empty to start from `~/.har/repos.json`. Once you edit the list in the panel, the saved list wins.
-- `har-panel`: the right panel (`"view": "detail"`). Change `size.px` to resize it, or delete the block to hide it.
+- `panel`: the right panel. Its stack `panel-body` holds `har-panel` (`"view": "detail"`), `files` and `changes`; `active` is the one shown first. Change `size.px` to resize it, or set `"hidden": true` to start with it closed.
+- `tabs`: the tab row (`mods/har-tabs`, a copy of herdr's `tabs` mod whose panel buttons match the stack above).
 - `status`: the status bar (`"view": "status"`).
 
 The same mod also has a `free` view (the slot chooser dialog) and a `settings` view (the settings dialog), which open as overlays.
