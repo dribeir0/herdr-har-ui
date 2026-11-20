@@ -108,7 +108,8 @@ install.sh                 copy or link into ~/.config/herdr-app
 layouts/har.json           the herdr layout (sidebar tree, work area, right panel, status bar)
 mods/har/main.js           views: tree, detail, status, free (dialog), settings
 mods/har/data.js           data layer: har CLI, git, gh, Mission Control
-mods/har/bin/              launch-agent.sh (free → launch → agent), collect.mjs (git + work units), find-tools.sh (finds har/node/gh),
+mods/har/lanes.js          commit-graph lane layout, from herdr-git-graph (MIT, Rabeeh T A)
+mods/har/bin/              launch-agent.sh (free → launch → agent), collect.mjs (git + work units), worktree.mjs (a slot's files and commits), conversations.mjs, find-tools.sh (finds har/node/gh),
                            install-browser.sh, install-chat.sh
 mods/har/patches/          claude-chat-linux.patch (herdr-claude-chat on Linux and under wrappers)
 mods/har/icons/            Lucide icons (ISC)

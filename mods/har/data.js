@@ -219,6 +219,30 @@ export async function slotConversations(repo, slot) {
 export const repoConvs = (repo, onChange) =>
   conversations(repo, onChange, { repo, exclude: (snapshot(repo)?.slots ?? []).filter((s) => s.active && s.branch).map((s) => s.branch) });
 
+// ---- worktree --------------------------------------------------------------------------
+// A slot worktree's git state (bin/worktree.mjs): branch, base, ahead/behind, changed files and the commits to
+// draw. Cached 5 s per worktree, so the slot view follows edits while it's shown.
+const wtCache = new Map();
+export function worktree(slot, onChange) {
+  if (!slot?.workDir) return null;
+  const key = `${slot.workDir}\n${slot.baseBranch ?? ""}`;
+  const c = wtCache.get(key);
+  if (!c || (!c.loading && Date.now() - c.at > 5000)) {
+    const entry = { at: Date.now(), data: c?.data ?? null, loading: true, onChange };
+    wtCache.set(key, entry);
+    (async () => {
+      try {
+        const { node } = await bins();
+        const r = await runTool(node, [`${BIN()}/worktree.mjs`, slot.workDir, ...(slot.baseBranch ? [slot.baseBranch] : [])], { timeout: 10000 });
+        entry.data = JSON.parse(r.stdout);
+      } catch (e) { entry.data = entry.data ?? { error: String(e?.message ?? e) }; }
+      entry.loading = false; entry.at = Date.now();
+      entry.onChange?.();
+    })();
+  } else if (c.loading) c.onChange = onChange;
+  return wtCache.get(key).data;
+}
+
 async function collect(repo, slots) {
   const { node } = await bins();
   const list = slots.filter((s) => s.active).map((s) => ({ id: s.id, workDir: s.workDir, baseBranch: s.baseBranch }));

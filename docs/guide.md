@@ -96,7 +96,7 @@ The header button (list / cards icon) switches to detailed cards. Each card show
 
 ### Open spaces
 
-At the top of the tree, **OPEN SPACES** lists every herdr space: its agent status, its name, which project and slot it belongs to (`sentry #1`, `har-project chat`, or *not HAR*) and its tab count. The shown space is highlighted; click one to go there. Click the heading to collapse or expand the list; it stays that way.
+At the top of the tree, **OPEN SPACES** lists every herdr space: its agent status, its name, which project and slot it belongs to (`sentry #1`, `har-project chat`, or *not HAR*) and its tab count. The shown space is highlighted; click one to go there. Hover one for a **×** that closes it (herdr asks first, since its terminals end). Click the heading to collapse or expand the list; it stays that way.
 
 A slot's space is the one named after it (`har-project#2`, `har-project#2 · telemetry-depth`), else the one with a terminal in the slot's worktree, else the one made in that worktree. A project's `· chat` space never counts as a slot's, even for a slot that runs in the project folder itself (`--no-worktree`).
 
@@ -245,6 +245,11 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
   - behind the base branch → a reminder to rebase;
   - harness bypass reported by `har`.
 - **Git & PR:** PR (click to open), ahead/behind, unpushed, clean/uncommitted, merged into base, PR title, last commit, remote branches, and the [freeing verdict](#freeing-a-slot) with its reasons.
+- **Worktree:** whether the worktree is **clean** or **dirty** (and how many files), its branch, how far ahead/behind it is against the base branch and against its upstream (or *not pushed*). Then:
+  - the changed files, with their status (M, A, D, R, U for untracked, conflict) and line counts. Click one to page its diff in a tab of the slot's space;
+  - a commit graph: the uncommitted changes as a dashed row, the branch's own commits, then the base branch with its newer commits on its own lane. Labels mark this branch, its upstream, the base and tags; `+N` counts other branches on a commit (sibling slots cut from it). Hover a commit for its hash, author and date.
+
+  It's read with `git` in the worktree every 5 seconds while the slot is shown. The lane layout is [herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph)'s (MIT, Rabeeh T A).
 - **Usage · OTel:** this slot's cost, tokens and models.
 - **Previews:** the slot's preview URLs. Click to open.
 - **Agents in this slot:** herdr agents whose terminal is in the worktree. Click to focus one.

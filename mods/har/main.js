@@ -7,15 +7,18 @@
 //   "free"     – dialog: every slot is taken, pick one to free for a new discussion
 // Data: `har env status|runs --json`, `har line status --json`, .har/ records, git, gh, Mission Control (OTel usage).
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { home, props, theme, run, notify, checking, openOverlay, closeOverlay, pickFolder, knownAgents, settings, nextCommand } from "herdr";
 import * as H from "./data.js";
+import { layoutLanes } from "./lanes.js";
 
 const ICON = (n) => `mods/har/icons/${n}.svg`;
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const POLL_MS = 10000;
 const SPACES_KEY = "__open-spaces__";   // its open/closed state lives with the projects' (har.expanded)
+const mono = () => settings().font_family ?? "JetBrains Mono";   // the terminal font
+const ROW = 24, LANE = 12, LANE_PAD = 6;   // the worktree graph: row height, lane width, left padding
 const CLEAR = "#00000000";
 const NOT_AGENT = /browser/i;   // programs herdr lists next to agents that can't take a prompt
 
@@ -499,10 +502,16 @@ export default class Har extends View {
         .bg(sp.active ? t.selected : CLEAR).hover((e) => e.bg(sp.active ? t.selected : t.hover))
         .tooltip(`${sp.name}\n${H.tilde(sp.folder)} · ${sp.tabs.length} tab${sp.tabs.length === 1 ? "" : "s"}, ${agents} agent${agents === 1 ? "" : "s"}${own ? `\nbelongs to ${whose}` : ""}`)
         .on_click(() => run("space.select", { id: sp.id }))
+        .on_hover((on, cx) => { if (on) this.hoverSpace = sp.id; else if (this.hoverSpace === sp.id) this.hoverSpace = null; cx.notify(); })
         .child(sp.status === "working" ? this.pulse(statusColor(t, sp.status), 6) : this.dot(sp.status ? statusColor(t, sp.status) : t.border, 6))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(sp.active ? t.foreground : t.muted).child(sp.name))
         .child(div().flex_none().text_size(10).text_color(own ? t.muted : t.dim).child(whose))
-        .child(div().flex_none().w(18).text_size(10).text_color(t.dim).child(String(sp.tabs.length))));
+        .child(this.hoverSpace === sp.id
+          ? div().id(`sp-x-${sp.id}`).size(18).flex_none().flex().items_center().justify_center().rounded(5).cursor_pointer()
+              .hover((e) => e.bg(t.ansi1 + "33")).tooltip("Close this space and end its terminals")
+              .on_click((_e, cx) => { cx.stop_propagation(); this.hoverSpace = null; run("space.close", { id: sp.id }); })
+              .child(this.icon("x", t.muted, 11))
+          : div().flex_none().w(18).text_size(10).text_color(t.dim).child(String(sp.tabs.length))));
     }
     rows.push(div().h(8).border_b(1).border_color(t.border).mb(6));
     return rows;
@@ -1149,6 +1158,7 @@ export default class Har extends View {
       header, actions,
       ...(hs.length ? [this.section("Next steps", t), hintBlock] : []),
       this.section("Git & PR", t), gitBlock,
+      ...this.worktreeBlock(s, t),
       this.section("Usage · OTel", t, snap.usage?.error ? div().text_size(10.5).text_color(t.blocked).child(snap.usage.error) : null),
       ...(snap.usage?.error ? [] : [this.usageBlock(f.usage, t, { label: "This slot", empty: "No OTel usage attributed to this slot yet." })]),
       ...(previews ? [this.section("Previews", t), previews] : []),
@@ -1159,6 +1169,98 @@ export default class Har extends View {
         div().text_size(11).text_color(t.blocked).child(`⚠ ${w}`)))] : []),
       this.section(`Runs · slot ${s.id}`, t), this.runList(repo, runs, t, false),
     ];
+  }
+
+  /** WORKTREE: clean or dirty, the branch against its base and upstream, the changed files (click: the diff in
+   *  a tab) and a graph of the branch's commits beside its base's, the uncommitted changes as a dashed top row. */
+  worktreeBlock(s, t) {
+    if (!s.active || !s.workDir) return [];
+    const w = H.worktree(s, () => this.cx?.notify());
+    if (!w) return [this.section("Worktree", t), div().px(14).text_size(11.5).text_color(t.dim).child("reading git…")];
+    if (w.error) return [this.section("Worktree", t), div().px(14).text_size(11).text_color(t.ansi1).child(w.error)];
+    const state = w.dirty ? this.chip(`dirty · ${w.files.length} file${w.files.length === 1 ? "" : "s"}`, t.blocked, t) : this.chip("clean", t.ansi2, t);
+    const vs = (a, b, what) => `${a ? `↑${a}` : "↑0"} ${b ? `↓${b}` : "↓0"} ${what}`;
+    const summary = v_flex().px(14).gap(3)
+      .child(h_flex().gap(6).items_center().min_w(0)
+        .child(this.icon("branch", t.muted, 12))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_family(mono()).child(w.branch ?? "detached HEAD")))
+      .child(h_flex().gap(10).text_size(10.5).text_color(t.dim)
+        .child(w.base ? div().text_color(w.behind ? t.blocked : t.dim).child(vs(w.ahead, w.behind, w.base)) : div().child("no base branch"))
+        .child(div().text_color(w.upAhead ? t.blocked : t.dim).child(w.upstream ? vs(w.upAhead, w.upBehind, w.upstream) : "not pushed")));
+
+    const ST = { M: [t.ansi3, "modified"], A: [t.ansi2, "added"], "?": [t.ansi2, "untracked"], D: [t.ansi1, "deleted"],
+      R: [t.ansi4, "renamed"], C: [t.ansi4, "copied"], U: [t.ansi5, "conflict"], T: [t.ansi3, "type changed"] };
+    const many = this.wtAllFiles === s.workDir ? w.files : w.files.slice(0, 10);
+    const files = v_flex().px(8).gap(1).children(many.map((f) => {
+      const [c, word] = ST[f.st] ?? [t.muted, f.st];
+      const slash = f.path.lastIndexOf("/");
+      return h_flex().id(`wf-${f.path}`).h(22).px(6).gap(7).items_center().rounded(5).cursor_pointer().hover((e) => e.bg(t.hover))
+        .tooltip(`${word}${f.staged ? " (staged)" : ""}: ${f.from ? `${f.from} → ` : ""}${f.path}\nclick: the diff in a tab`)
+        .on_click(() => this.showDiff(s, f))
+        .child(div().w(10).flex_none().text_size(10.5).font_semibold().font_family(mono()).text_color(c).child(f.st === "?" ? "U" : f.st))
+        .child(h_flex().flex_1().min_w(0).gap(0).text_size(11.5)
+          .child(div().flex_none().text_color(t.foreground).child(f.path.slice(slash + 1)))
+          .child(div().flex_1().min_w(0).pl(6).truncate().text_size(10.5).text_color(t.dim).child(slash > 0 ? f.path.slice(0, slash) : "")))
+        .child(div().flex_none().text_size(10.5).font_family(mono()).text_color(t.ansi2).child(f.add ? `+${f.add}` : f.st === "?" ? "new" : ""))
+        .child(div().flex_none().text_size(10.5).font_family(mono()).text_color(t.ansi1).child(f.del ? `−${f.del}` : ""));
+    }))
+      .when(w.files.length > many.length, (e) => e.child(h_flex().id("wf-more").h(22).px(6).gap(6).items_center().rounded(5).cursor_pointer()
+        .hover((x) => x.bg(t.hover)).on_click((_e, cx) => { this.wtAllFiles = s.workDir; cx.notify(); })
+        .child(this.icon("chevron-down", t.dim, 11)).child(div().text_size(11).text_color(t.dim).child(`${w.files.length - many.length} more`))));
+
+    return [this.section("Worktree", t, state), summary,
+      ...(w.files.length ? [div().h(4), files] : []),
+      ...(w.commits.length ? [div().h(6), this.graph(w, t)] : [])];
+  }
+
+  /** The branch's commits beside its base's, drawn on lanes (herdr-git-graph's layout). */
+  graph(w, t) {
+    const commits = w.dirty && w.commits[0]
+      ? [{ hash: "~worktree", short: "", parents: [w.commits.find((c) => c.head)?.hash ?? w.commits[0].hash], subject: `Uncommitted changes · ${w.files.length} file${w.files.length === 1 ? "" : "s"}`,
+          uncommitted: true, dashed: true, refs: [], others: 0, mine: true }, ...w.commits]
+      : w.commits;
+    const { rows, width } = layoutLanes(commits);
+    const colors = [t.accent, t.ansi4, t.ansi5, t.ansi3, t.ansi6, t.ansi1];
+    const gw = LANE_PAD * 2 + Math.min(width, 6) * LANE;
+    const x = (lane) => LANE_PAD + lane * LANE + LANE / 2;
+    const cell = (row, c) => {
+      const paths = new Map();
+      for (const [a, ya, b, yb, k, dashed] of row.segments) {
+        const color = dashed ? t.dim : colors[k % colors.length], key = `${color}${dashed ? "-" : ""}`;
+        let p = paths.get(key)?.p ?? (dashed ? PathBuilder.stroke(1.5).dash_array([3, 3]) : PathBuilder.stroke(1.5));
+        p = p.move_to(x(a), ya * ROW);
+        if (a === b) p = p.line_to(x(b), yb * ROW);
+        else { const mid = (ya * ROW + yb * ROW) / 2; p = p.cubic_bezier_to(x(b), yb * ROW, x(a), mid, x(b), mid); }
+        paths.set(key, { p, color });
+      }
+      const color = c.uncommitted ? t.dim : colors[row.lane % colors.length];
+      const dot = div().absolute().left(x(row.lane) - 4).top(ROW / 2 - 4).size(8).rounded(4);
+      return div().relative().flex_none().w(gw).h(ROW).overflow_hidden()
+        .children([...paths.values()].map(({ p, color }) => window.paint_path(p.build(), color).absolute().top(0).left(0).size_full()))
+        .child(c.head || c.uncommitted ? dot.bg(t.background).border(2).border_color(color) : dot.bg(color));
+    };
+    const label = (r) => {
+      const tag = r.startsWith("tag:"), mine = r === w.branch, up = r === w.upstream;
+      const c = tag ? t.ansi3 : mine ? t.accent : up ? t.ansi4 : t.muted;
+      return div().flex_none().max_w(150).truncate().px(4).rounded(4).border_1().border_color(c + "88").bg(mine ? c + "22" : CLEAR)
+        .text_size(9.5).font_family(mono()).text_color(c).child(tag ? r.slice(4) : r === w.branch ? "this branch" : r);
+    };
+    return v_flex().px(8).children(commits.map((c, i) =>
+      h_flex().id(`wg-${c.hash}`).h(ROW).pr(6).gap(6).items_center().rounded(5).hover((e) => e.bg(t.hover))
+        .tooltip(c.uncommitted ? "Not committed yet" : `${c.short} · ${c.author} · ${new Date(c.at).toLocaleString()}\n${c.subject}${c.others ? `\n+${c.others} other branch${c.others === 1 ? "" : "es"} here` : ""}`)
+        .child(cell(rows[i], c))
+        .children(c.refs.map(label))
+        .when(c.others > 0 && !c.refs.length, (e) => e.child(div().flex_none().text_size(9.5).text_color(t.dim).child(`+${c.others}`)))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(c.uncommitted ? t.blocked : c.mine ? t.foreground : t.muted)
+          .when(Boolean(c.uncommitted), (e) => e.italic()).child(c.subject))
+        .child(div().flex_none().text_size(10).text_color(t.dim).child(c.at ? H.ago(c.at) : ""))));
+  }
+
+  /** A changed file's diff against HEAD, paged in a tab of the slot's space (a new file: all of it). */
+  showDiff(s, f) {
+    const diff = f.st === "?" ? `git diff --no-index -- /dev/null "$1"` : `git diff HEAD -M -- "$1"`;
+    this.tab(`diff · ${f.path.split("/").pop()}`, ["bash", "-c", `${diff}; exec "\${SHELL:-bash}"`, "diff", f.path], s.workDir,
+      { space: H.slotSpace(s)?.id });
   }
 
   runList(repo, runs, t, showSlot) {
