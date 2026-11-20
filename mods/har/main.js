@@ -69,6 +69,18 @@ export default class Har extends View {
       cx.timer.every(1500, (cx) => this.pollLive(cx));
       // key commands ("alt-2": "har.slot-2", "alt-v": "har.verify-full", …) are handled by the status bar
     }
+    if (this.view === "git") {
+      // props: { mode: "branch" | "commit" | "discard", workDir, branch, hash?, short?, file?, st?, staged? }
+      const p = props() ?? {};
+      this.gitError = null; this.gitBusy = false; this.stageAll = !(p.staged > 0);
+      this.gitInput = InputState.new({ placeholder: p.mode === "commit" ? "Commit message" : "new-branch-name" });
+      this.gitInput.on("change", (_e, cx) => { this.gitError = null; cx.notify(); });
+      this.gitInput.on("submit", (_e, cx) => { this.gitGo(cx); });
+      this.gitInput.focus();
+      cx.timer.after(300, () => this.gitInput?.focus());
+      this.handle = cx.focus_handle();
+      if (p.mode === "discard") this.handle.focus();
+    }
     if (this.view === "settings") {
       H.hasBrowser().then(() => cx.notify()).catch(() => {});
       H.hasChat().then(() => cx.notify()).catch(() => {});
@@ -413,6 +425,7 @@ export default class Har extends View {
     if (this.view === "detail") return this.renderDetail(t, cx);
     if (this.view === "free") return this.renderFree(t, cx);
     if (this.view === "release") return this.renderRelease(t, cx);
+    if (this.view === "git") return this.renderGit(t, cx);
     if (this.view === "settings") return this.renderSettings(t, cx);
     // the poller follows repo switches and refresh requests
     if (!checking() && (H.tick() !== this.loadedTick || H.currentRepo() !== this.loadedRepo)) this.refresh(cx);
@@ -1194,23 +1207,41 @@ export default class Har extends View {
     const files = v_flex().px(8).gap(1).children(many.map((f) => {
       const [c, word] = ST[f.st] ?? [t.muted, f.st];
       const slash = f.path.lastIndexOf("/");
+      const hov = this.hoverFile === `${s.workDir}/${f.path}`;
+      const staging = f.staged && f.unstaged ? "partly staged" : f.staged ? "staged" : "not staged";
       return h_flex().id(`wf-${f.path}`).h(22).px(6).gap(7).items_center().rounded(5).cursor_pointer().hover((e) => e.bg(t.hover))
-        .tooltip(`${word}${f.staged ? " (staged)" : ""}: ${f.from ? `${f.from} → ` : ""}${f.path}\nclick: the diff in a tab`)
+        .tooltip(`${word}, ${staging}: ${f.from ? `${f.from} → ` : ""}${f.path}\nclick: the diff in a tab`)
         .on_click(() => this.showDiff(s, f))
+        .on_hover((on, cx) => { const k = `${s.workDir}/${f.path}`; if (on) this.hoverFile = k; else if (this.hoverFile === k) this.hoverFile = null; cx.notify(); })
         .child(div().w(10).flex_none().text_size(10.5).font_semibold().font_family(mono()).text_color(c).child(f.st === "?" ? "U" : f.st))
+        .child(div().size(5).flex_none().rounded(3).bg(f.staged && !f.unstaged ? t.ansi2 : f.staged ? t.ansi2 + "77" : CLEAR)
+          .when(f.staged || f.unstaged, (e) => e.border_1().border_color(f.staged ? t.ansi2 : t.dim)))
         .child(h_flex().flex_1().min_w(0).gap(0).text_size(11.5)
           .child(div().flex_none().text_color(t.foreground).child(f.path.slice(slash + 1)))
           .child(div().flex_1().min_w(0).pl(6).truncate().text_size(10.5).text_color(t.dim).child(slash > 0 ? f.path.slice(0, slash) : "")))
-        .child(div().flex_none().text_size(10.5).font_family(mono()).text_color(t.ansi2).child(f.add ? `+${f.add}` : f.st === "?" ? "new" : ""))
-        .child(div().flex_none().text_size(10.5).font_family(mono()).text_color(t.ansi1).child(f.del ? `−${f.del}` : ""));
+        .when(!hov, (e) => e
+          .child(div().flex_none().text_size(10.5).font_family(mono()).text_color(t.ansi2).child(f.add ? `+${f.add}` : f.st === "?" ? "new" : ""))
+          .child(div().flex_none().text_size(10.5).font_family(mono()).text_color(t.ansi1).child(f.del ? `−${f.del}` : "")))
+        .when(hov, (e) => e.child(h_flex().flex_none().gap(1)
+          .when(f.st !== "D", (x) => x.child(this.miniBtn(`wf-open-${f.path}`, "external", "Open in your editor", t, () => this.openFile(s, f))))
+          .when(f.unstaged || f.st === "?", (x) => x.child(this.miniBtn(`wf-add-${f.path}`, "plus", `Stage (git add)`, t, () => this.gitFile(s, ["add", "--", f.path], `Staged ${f.path}`))))
+          .when(f.staged, (x) => x.child(this.miniBtn(`wf-reset-${f.path}`, "minus", "Unstage (git restore --staged)", t, () => this.gitFile(s, ["restore", "--staged", "--", f.path], `Unstaged ${f.path}`))))
+          .child(this.miniBtn(`wf-discard-${f.path}`, "undo-2", f.st === "?" ? "Delete this new file…" : "Discard changes (back to HEAD)…", t,
+            () => this.gitDialog(s, { mode: "discard", file: f.path, st: f.st }), t.ansi1))));
     }))
       .when(w.files.length > many.length, (e) => e.child(h_flex().id("wf-more").h(22).px(6).gap(6).items_center().rounded(5).cursor_pointer()
         .hover((x) => x.bg(t.hover)).on_click((_e, cx) => { this.wtAllFiles = s.workDir; cx.notify(); })
         .child(this.icon("chevron-down", t.dim, 11)).child(div().text_size(11).text_color(t.dim).child(`${w.files.length - many.length} more`))));
 
-    return [this.section("Worktree", t, state), summary,
+    const staged = w.files.filter((f) => f.staged).length, unstaged = w.files.filter((f) => f.unstaged || f.st === "?").length;
+    const tools = h_flex().px(14).pt(6).gap(6).flex_wrap()
+      .when(unstaged > 0, (e) => e.child(this.button("wt-add", "Stage all", t, () => this.gitFile(s, ["add", "-A"], "Staged everything"), { icon: "plus", h: 24 })))
+      .when(staged > 0, (e) => e.child(this.button("wt-unstage", "Unstage all", t, () => this.gitFile(s, ["reset", "-q"], "Unstaged everything"), { icon: "minus", h: 24 })))
+      .when(w.dirty, (e) => e.child(this.button("wt-commit", staged ? `Commit ${staged}…` : "Commit all…", t, () => this.gitDialog(s, { mode: "commit", staged }), { icon: "git-commit", h: 24 })))
+      .child(this.button("wt-branch", "Branch…", t, () => this.gitDialog(s, { mode: "branch", hash: "HEAD", short: "HEAD" }), { icon: "git-branch-plus", h: 24 }));
+    return [this.section("Worktree", t, state), summary, tools,
       ...(w.files.length ? [div().h(4), files] : []),
-      ...(w.commits.length ? [div().h(6), this.graph(w, t)] : [])];
+      ...(w.commits.length ? [div().h(6), (this.graphSlot = s, this.graph(w, t))] : [])];
   }
 
   /** The branch's commits beside its base's, drawn on lanes (herdr-git-graph's layout). */
@@ -1245,15 +1276,117 @@ export default class Har extends View {
       return div().flex_none().max_w(150).truncate().px(4).rounded(4).border_1().border_color(c + "88").bg(mine ? c + "22" : CLEAR)
         .text_size(9.5).font_family(mono()).text_color(c).child(tag ? r.slice(4) : r === w.branch ? "this branch" : r);
     };
+    const slot = this.graphSlot;
     return v_flex().px(8).children(commits.map((c, i) =>
       h_flex().id(`wg-${c.hash}`).h(ROW).pr(6).gap(6).items_center().rounded(5).hover((e) => e.bg(t.hover))
+        .on_hover((on, cx) => { if (on) this.hoverCommit = c.hash; else if (this.hoverCommit === c.hash) this.hoverCommit = null; cx.notify(); })
         .tooltip(c.uncommitted ? "Not committed yet" : `${c.short} · ${c.author} · ${new Date(c.at).toLocaleString()}\n${c.subject}${c.others ? `\n+${c.others} other branch${c.others === 1 ? "" : "es"} here` : ""}`)
         .child(cell(rows[i], c))
         .children(c.refs.map(label))
         .when(c.others > 0 && !c.refs.length, (e) => e.child(div().flex_none().text_size(9.5).text_color(t.dim).child(`+${c.others}`)))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(c.uncommitted ? t.blocked : c.mine ? t.foreground : t.muted)
           .when(Boolean(c.uncommitted), (e) => e.italic()).child(c.subject))
-        .child(div().flex_none().text_size(10).text_color(t.dim).child(c.at ? H.ago(c.at) : ""))));
+        .when(this.hoverCommit !== c.hash || c.uncommitted || !slot, (e) => e.child(div().flex_none().text_size(10).text_color(t.dim).child(c.at ? H.ago(c.at) : "")))
+        .when(this.hoverCommit === c.hash && !c.uncommitted && Boolean(slot), (e) => e.child(h_flex().flex_none().gap(1)
+          .child(this.miniBtn(`wg-show-${c.hash}`, "eye", "Show this commit (git show) in a tab", t, () => this.showCommit(slot, c)))
+          .child(this.miniBtn(`wg-br-${c.hash}`, "git-branch-plus", "New branch from this commit…", t,
+            () => this.gitDialog(slot, { mode: "branch", hash: c.hash, short: c.short })))))));
+  }
+
+  miniBtn(id, icon, tip, t, on, color) {
+    return div().id(id).size(20).flex_none().flex().items_center().justify_center().rounded(5).cursor_pointer()
+      .hover((e) => e.bg((color ?? t.foreground) + "22")).tooltip(tip)
+      .on_click((_e, cx) => { cx.stop_propagation(); on(cx); })
+      .child(this.icon(icon, color ?? t.muted, 12));
+  }
+
+  /** git in the slot's worktree, then a notification on failure and a fresh read. */
+  gitFile(s, args, done) {
+    H.git(s.workDir, args).then((r) => {
+      if (!r.ok) notify({ title: `git ${args[0]} failed`, body: r.out.slice(0, 400), level: "error", timeout: 8000 });
+      else if (done) notify({ title: done, level: "success", timeout: 2500 });
+      H.rereadWorktree(s); this.cx?.notify();
+    });
+  }
+
+  gitDialog(s, opts) {
+    openOverlay({ mod: "har", kind: "dialog", width: 460, height: opts.mode === "commit" ? 260 : 220,
+      props: { view: "git", workDir: s.workDir, branch: s.branch, ...opts } });
+  }
+
+  openFile(s, f) {
+    H.openInEditor(s.workDir, f.path).then((gui) => {
+      if (!gui) this.tab(f.path.split("/").pop(), ["bash", "-ic", `\${VISUAL:-\${EDITOR:-vi}} "$1"; exec "\${SHELL:-bash}"`, "edit", f.path], s.workDir,
+        { space: H.slotSpace(s)?.id });
+    });
+  }
+
+  showCommit(s, c) {
+    this.tab(`show · ${c.short}`, ["bash", "-c", `git show --stat --patch "$1"; exec "\${SHELL:-bash}"`, "show", c.hash], s.workDir, { space: H.slotSpace(s)?.id });
+  }
+
+  /** The git dialog: a new branch (from HEAD or a commit, not checked out: the slot keeps its own branch), a
+   *  commit of the staged changes (or of everything), or confirming a discard. */
+  renderGit(t, cx) {
+    const p = props() ?? {};
+    const close = () => closeOverlay(p.overlay);
+    const title = p.mode === "branch" ? `New branch from ${p.short === "HEAD" ? "this worktree's HEAD" : p.short}`
+      : p.mode === "commit" ? (p.staged ? `Commit ${p.staged} staged file${p.staged === 1 ? "" : "s"}` : "Commit") : "Discard changes?";
+    const note = p.mode === "branch" ? `Created from ${p.short === "HEAD" ? p.branch : p.short}, not checked out: the slot stays on ${p.branch}, so HAR keeps tracking it.`
+      : p.mode === "commit" ? `On ${p.branch}, in ${H.tilde(p.workDir)}.`
+      : p.st === "?" ? `${p.file} is a new file: it will be deleted. This can't be undone.`
+      : `${p.file} goes back to its last committed version, staged and unstaged changes alike. This can't be undone.`;
+    const label = this.gitBusy ? "…" : p.mode === "branch" ? "Create branch" : p.mode === "commit" ? "Commit" : p.st === "?" ? "Delete file" : "Discard";
+    return v_flex().id("har-git").track_focus(this.handle).size_full().min_h(0).p(18).gap(10).bg(t.popover).text_color(t.foreground).text_size(12.5)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") { close(); cx.stop_propagation(); }
+        else if (e.key === "enter" && p.mode === "discard") { this.gitGo(cx); cx.stop_propagation(); }
+      })
+      .child(h_flex().items_center().gap(8)
+        .child(this.icon(p.mode === "discard" ? "undo-2" : p.mode === "commit" ? "git-commit" : "git-branch-plus", p.mode === "discard" ? t.ansi1 : t.accent, 15))
+        .child(div().flex_1().text_size(14).font_semibold().child(title))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(div().text_size(11.5).text_color(p.mode === "discard" ? t.ansi1 : t.muted).child(note))
+      .when(p.mode !== "discard", (e) => e.child(Input.new(this.gitInput).h(32).px(9).rounded(7).border_1().border_color(t.input).bg(t.background)
+        .text_size(12.5).text_color(t.foreground).font_family(p.mode === "branch" ? mono() : undefined)))
+      .when(p.mode === "commit" && p.staged > 0, (e) => e.child(h_flex().id("git-all").gap(8).items_center().cursor_pointer()
+        .on_click((_e, cx) => { this.stageAll = !this.stageAll; cx.notify(); })
+        .child(div().size(14).rounded(4).border_1().border_color(this.stageAll ? t.accent : t.input).bg(this.stageAll ? t.accent : CLEAR)
+          .flex().items_center().justify_center().when(this.stageAll, (x) => x.child(this.icon("check", t.background, 10))))
+        .child(div().text_size(11.5).text_color(t.muted).child("Stage everything first (git add -A)"))))
+      .when(Boolean(this.gitError), (e) => e.child(div().text_size(11.5).text_color(t.ansi1).child(this.gitError)))
+      .child(div().flex_1())
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1())
+        .child(this.button("git-cancel", "Cancel", t, close, { h: 30 }))
+        .child(this.button("git-go", label, t, (cx) => this.gitGo(cx), { primary: true, danger: p.mode === "discard", h: 30 })));
+  }
+
+  async gitGo(cx) {
+    const p = props() ?? {};
+    if (this.gitBusy) return;
+    const text = (this.gitInput?.value() ?? "").trim();
+    const fail = (msg) => { this.gitBusy = false; this.gitError = msg; cx.notify(); };
+    this.gitBusy = true; this.gitError = null; cx.notify();
+    let r, done;
+    if (p.mode === "branch") {
+      const bad = await H.checkBranch(p.workDir, text);
+      if (bad) return fail(bad);
+      r = await H.git(p.workDir, ["branch", text, p.hash ?? "HEAD"]);
+      done = `Branch ${text} created at ${p.short === "HEAD" ? "HEAD" : p.short}`;
+    } else if (p.mode === "commit") {
+      if (!text) return fail("Type a commit message.");
+      if (this.stageAll || !p.staged) { const a = await H.git(p.workDir, ["add", "-A"]); if (!a.ok) return fail(a.out); }
+      r = await H.git(p.workDir, ["commit", "-m", text]);
+      done = r.ok ? r.out.split("\n")[0] : null;
+    } else {
+      r = p.st === "?" ? await H.git(p.workDir, ["clean", "-f", "--", p.file])
+        : await H.git(p.workDir, ["restore", "--source=HEAD", "--staged", "--worktree", "--", p.file]);
+      done = p.st === "?" ? `Deleted ${p.file}` : `Discarded changes to ${p.file}`;
+    }
+    if (!r.ok) return fail(r.out.slice(0, 500));
+    notify({ title: done, level: "success", timeout: 3000 });
+    closeOverlay(p.overlay);
   }
 
   /** A changed file's diff against HEAD, paged in a tab of the slot's space (a new file: all of it). */

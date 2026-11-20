@@ -246,8 +246,14 @@ Shown when a slot is selected. Press **×** or use `har.overview` to go back.
   - harness bypass reported by `har`.
 - **Git & PR:** PR (click to open), ahead/behind, unpushed, clean/uncommitted, merged into base, PR title, last commit, remote branches, and the [freeing verdict](#freeing-a-slot) with its reasons.
 - **Worktree:** whether the worktree is **clean** or **dirty** (and how many files), its branch, how far ahead/behind it is against the base branch and against its upstream (or *not pushed*). Then:
-  - the changed files, with their status (M, A, D, R, U for untracked, conflict) and line counts. Click one to page its diff in a tab of the slot's space;
-  - a commit graph: the uncommitted changes as a dashed row, the branch's own commits, then the base branch with its newer commits on its own lane. Labels mark this branch, its upstream, the base and tags; `+N` counts other branches on a commit (sibling slots cut from it). Hover a commit for its hash, author and date.
+  - buttons: **Stage all** (`git add -A`), **Unstage all** (`git reset`), **Commit…** (a message; it commits what's staged, or everything when nothing is, with a box to stage everything first) and **Branch…** (a new branch from HEAD);
+  - the changed files, with their status (M, A, D, R, U for untracked, conflict), a dot for staged (filled) or partly staged, and line counts. Click one to page its diff in a tab of the slot's space. Hover one for:
+    - **Open:** in `$VISUAL` / `$EDITOR`. Cursor, VS Code, Zed and Sublime open it with the worktree as the folder; a terminal editor opens in a tab; with neither set, the system's app;
+    - **Stage** (`git add`) / **Unstage** (`git restore --staged`);
+    - **Discard…:** back to HEAD (`git restore --source=HEAD --staged --worktree`), or deletes a new file (`git clean -f`). It asks first: this can't be undone;
+  - a commit graph: the uncommitted changes as a dashed row, the branch's own commits, then the base branch with its newer commits on its own lane. Labels mark this branch, its upstream, the base and tags; `+N` counts other branches on a commit (sibling slots cut from it). Hover a commit for its hash, author and date, and for **Show** (`git show` in a tab) and **New branch…** from that commit.
+
+  New branches are created, not checked out: the slot stays on its own branch, which HAR tracks. Commits run the repo's hooks, HAR's commit gate included; if one refuses, the dialog shows why.
 
   It's read with `git` in the worktree every 5 seconds while the slot is shown. The lane layout is [herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph)'s (MIT, Rabeeh T A).
 - **Usage · OTel:** this slot's cost, tokens and models.

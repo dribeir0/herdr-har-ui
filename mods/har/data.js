@@ -242,6 +242,41 @@ export function worktree(slot, onChange) {
   } else if (c.loading) c.onChange = onChange;
   return wtCache.get(key).data;
 }
+/** Reads the worktree again on the next render (after a git action). */
+export function rereadWorktree(slot) {
+  for (const [k, e] of wtCache) if (k.startsWith(`${slot.workDir}\n`) && !e.loading) e.at = 0;
+}
+
+/** Runs git in a worktree: { ok, out } with stderr (or stdout) as the message when it fails. */
+export async function git(dir, args) {
+  // through runTool: git hooks (HAR's commit gate) need har and node on PATH
+  const r = await runTool("git", ["-C", dir, ...args], { timeout: 120000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e), stdout: "" }));
+  return { ok: r.code === 0, out: (r.code === 0 ? r.stdout : r.stderr || r.stdout || `git ${args[0]} failed`).trim() };
+}
+
+/** A valid new branch name (git check-ref-format), or why not. */
+export async function checkBranch(dir, name) {
+  if (!name.trim()) return "Type a name.";
+  const r = await exec("git", ["-C", dir, "check-ref-format", "--branch", name.trim()]).catch(() => ({ code: 1 }));
+  if (r.code !== 0) return "Not a valid branch name.";
+  const e = await exec("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${name.trim()}`]).catch(() => ({ code: 1 }));
+  return e.code === 0 ? "A branch with this name exists." : null;
+}
+
+/** Opens a file in $VISUAL / $EDITOR: a desktop editor (Cursor, VS Code, Zed, Sublime) with the worktree as its
+ *  folder; else the system's app (xdg-open / open). Resolves false when the editor is a terminal one, so the
+ *  caller opens it in a tab instead. */
+export async function openInEditor(dir, file) {
+  const script = `e="\${VISUAL:-\${EDITOR:-}}"; set -- "$1" "$2"
+case "\${e##*/}" in
+  cursor|code|code-insiders|codium|windsurf) "$e" "$1" --goto "$2" >/dev/null 2>&1 & ;;
+  zed|subl|subl3) "$e" "$1" "$2" >/dev/null 2>&1 & ;;
+  "") if command -v xdg-open >/dev/null; then xdg-open "$2" >/dev/null 2>&1 & else open "$2" & fi ;;
+  *) exit 9 ;;
+esac`;
+  const r = await exec("bash", ["-ic", script, "open", dir, `${dir}/${file}`]).catch(() => ({ code: 1 }));
+  return r.code !== 9;
+}
 
 async function collect(repo, slots) {
   const { node } = await bins();

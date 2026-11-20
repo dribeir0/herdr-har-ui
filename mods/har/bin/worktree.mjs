@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // A slot worktree's git state, as JSON, for the slot view's Worktree section:
 //   { branch, upstream, base, ahead, behind, upAhead, upBehind, dirty,
-//     files: [{ st: "M"|"A"|"D"|"R"|"?"|"U", staged, path, from, add, del }],
+//     files: [{ st: "M"|"A"|"D"|"R"|"?"|"U", staged, unstaged, path, from, add, del }],   (both: partly staged)
 //     commits: [{ hash, short, parents, at, author, subject, refs: [..], mine, head, base }] }
 // Usage: worktree.mjs <workDir> [baseBranch]
 // `ahead`/`behind` are against the base branch (the one the slot was cut from), `upAhead`/`upBehind` against
@@ -37,7 +37,7 @@ for (const l of lines) {
   if (path.includes(" -> ")) [from, path] = path.split(" -> ");
   const st = x === "?" ? "?" : x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D") ? "U"
     : [x, y].find((c) => c !== " " && c !== "?") ?? "M";
-  files.set(path, { st, staged: x !== " " && x !== "?", path, from, add: null, del: null });
+  files.set(path, { st, staged: x !== " " && x !== "?", unstaged: y !== " ", path, from, add: null, del: null });
 }
 // line counts, staged and not, against HEAD
 for (const l of (git("diff", "HEAD", "--numstat", "-M") ?? "").split("\n").filter(Boolean)) {
