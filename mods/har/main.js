@@ -260,6 +260,14 @@ export default class Har extends View {
     run("space.new", { name: `${H.base(repo)}#${slot.id}${slot.work ? ` · ${slot.work}` : ""}`, folder: slot.workDir });
   }
 
+  /** Clicking an open space does what clicking its owner in the tree does: a slot's space opens that slot
+   *  (Mission Control shows it, its agent is focused), a project's chat space selects the project. */
+  openOwnedSpace(sp, own) {
+    if (own?.slot) return this.openSlot(own.repo, own.slot);
+    if (own) { H.selectRepo(own.repo); H.selectSlot(null); showHarPanel(); }
+    run("space.select", { id: sp.id });
+  }
+
   /** Clicking a slot: its agent if one is running there, else (Settings → Slot click → Resume) its most recent
    *  conversation, resumed in the slot's space. A slot with no conversation shows (or opens) its space. */
   openSlot(repo, s) {
@@ -510,7 +518,7 @@ export default class Har extends View {
   }
 
   /** OPEN SPACES: every herdr space, the shown one highlighted, with the project and slot it belongs to, so you
-   *  can see where a click on a slot will take you. A click shows that space. */
+   *  can see where a click on a slot will take you. A click acts as a click on its slot (or project) in the tree. */
   spaceRows(t) {
     const ix = H.spaceIndex(), list = ix.all;
     if (!list.length) return [];
@@ -531,7 +539,7 @@ export default class Har extends View {
       rows.push(h_flex().id(`sp-${sp.id}`).px(8).h(26).gap(7).items_center().rounded(7).cursor_pointer()
         .bg(sp.active ? t.selected : CLEAR).hover((e) => e.bg(sp.active ? t.selected : t.hover))
         .tooltip(`${sp.name}\n${H.tilde(sp.folder)} · ${sp.tabs.length} tab${sp.tabs.length === 1 ? "" : "s"}, ${agents} agent${agents === 1 ? "" : "s"}${own ? `\nbelongs to ${whose}` : ""}\nright-click: rename, worktree, close`)
-        .on_click(() => run("space.select", { id: sp.id }))
+        .on_click(() => this.openOwnedSpace(sp, own))
         // Herdr's own space menu: Rename, New / Open / Remove worktree, Close
         .on_mouse_down("right", () => openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: sp.id } } }))
         .on_hover((on, cx) => { if (on) this.hoverSpace = sp.id; else if (this.hoverSpace === sp.id) this.hoverSpace = null; cx.notify(); })

@@ -96,7 +96,7 @@ The header button (list / cards icon) switches to detailed cards. Each card show
 
 ### Open spaces
 
-At the top of the tree, **OPEN SPACES** lists every herdr space: its agent status, its name, which project and slot it belongs to (`sentry #1`, `har-project chat`, or *not HAR*) and its tab count. The shown space is highlighted; click one to go there. Hover one for a **×** that closes it (herdr asks first, since its terminals end). Right-click one for herdr's own space menu: **Rename**, **New / Open / Remove worktree** and **Close**. Click the heading to collapse or expand the list; it stays that way.
+At the top of the tree, **OPEN SPACES** lists every herdr space: its agent status, its name, which project and slot it belongs to (`sentry #1`, `har-project chat`, or *not HAR*) and its tab count. The shown space is highlighted. Clicking one does the same as clicking its owner in the tree below: a slot's space selects that slot (Mission Control shows it) and focuses its agent, a project's chat space selects the project, and a space HAR doesn't own just opens. Hover one for a **×** that closes it (herdr asks first, since its terminals end). Right-click one for herdr's own space menu: **Rename**, **New / Open / Remove worktree** and **Close**. Click the heading to collapse or expand the list; it stays that way.
 
 A slot's space is the one named after it (`har-project#2`, `har-project#2 · telemetry-depth`), else the one with a terminal in the slot's worktree, else the one made in that worktree. A project's `· chat` space never counts as a slot's, even for a slot that runs in the project folder itself (`--no-worktree`).
 
