@@ -522,6 +522,9 @@ export async function hasBrowser() {
 }
 export const browserInstalled = () => browserOk;
 
+/** Opens a URL in the default system browser, whatever Settings → Links says. */
+export const openSystemUrl = (url) => systemOpen(url);
+
 /** Opens a URL in the herdr browser (Settings → Links), else the system browser. */
 export async function openUrl(url) {
   if (setting("links") !== "system" && (await hasBrowser())) {
