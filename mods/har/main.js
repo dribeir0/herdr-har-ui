@@ -1136,7 +1136,7 @@ export default class Har extends View {
 
     const previews = entries.length ? h_flex().px(14).gap(6).flex_wrap().children(entries.map(([label, url]) =>
       h_flex().id(`pv-${label}`).h(24).px(8).gap(5).items_center().rounded(6).border_1().border_color(t.border).cursor_pointer()
-        .hover((e) => e.bg(t.hover)).tooltip(url).on_click(() => H.openUrl(url))
+        .hover((e) => e.bg(t.hover)).tooltip(url).on_click(() => H.openSystemUrl(url))
         .child(div().text_size(11.5).child(label)).child(div().text_size(10.5).text_color(t.dim).child(url.replace(/^https?:\/\//, "")))
         .child(this.icon("external", t.dim, 10)))) : null;
 
